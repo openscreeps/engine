@@ -104,8 +104,13 @@ serialization turns into `null`.
 
 ## State and lifetime
 
-- Constructors copy their input state; snapshots do not share mutable state with
-  the running engine. The engine has no database or network dependency.
+- Constructors copy their input state by default; snapshots do not share mutable
+  state with the running engine. The engine has no database or network dependency.
+- A serialized server can opt into `new Simulation(world, { stateOwnership: 'shared' })`
+  to process its canonical world without copying it each tick. The host must not
+  mutate that world during a tick. Call `simulation.refreshTerrain()` after adding,
+  removing, or editing room terrain. Between-tick maintenance can advance `world.rngState`;
+  the simulation resumes from that state on its next tick.
 - `engine.snapshot()` contains the world plus persistent runtime data.
   `Engine.restore(snapshot, options)` restores a separate engine. JavaScript heap
   globals are not serialized: restoring performs a global reset while preserving

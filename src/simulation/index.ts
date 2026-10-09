@@ -65,6 +65,11 @@ export type ManualIntents = Readonly<
 >;
 
 export interface SimulationOptions {
+  /**
+   * Copy by default. A serialized server may explicitly share its canonical world with the
+   * simulation; it must not mutate that world during a tick and must refresh changed terrain.
+   */
+  stateOwnership?: 'copy' | 'shared';
   /** Wall clock in milliseconds, used wherever upstream calls `Date.now()`. Defaults to `Date.now`. */
   now?: () => number;
   /** Mirrors the upstream `config.ptr` flag. */
@@ -113,23 +118,17 @@ export class Simulation {
   readonly #ptr: boolean;
   readonly #recordHistory: boolean;
   readonly #random: SeededRandom;
-  readonly #pathFinder: PathFinder;
+  #pathFinder!: PathFinder;
   readonly #hooks: SimulationHooks;
 
   constructor(state: WorldState, options: SimulationOptions = {}) {
-    this.#world = cloneDeep(state);
+    this.#world = options.stateOwnership === 'shared' ? state : cloneDeep(state);
     this.#now = options.now ?? Date.now;
     this.#ptr = options.ptr ?? false;
     this.#recordHistory = options.recordHistory ?? false;
     this.#hooks = options.hooks ?? {};
     this.#random = new SeededRandom(this.#world.rngState);
-    const terrain = this.#world.terrain;
-    // only map-coordinate rooms can be addressed by the path finder (not e.g. the `sim` room)
-    this.#pathFinder = new PathFinder(
-      Object.keys(terrain)
-        .filter((room) => /^[WE]\d+[NS]\d+$/.test(room))
-        .map((room) => ({ room, terrain: terrain[room] as string })),
-    );
+    this.refreshTerrain();
   }
 
   /** Live read-only view of the world. Do not mutate; use `snapshot()` for a detached copy. */
@@ -141,8 +140,19 @@ export class Simulation {
     return cloneDeep(this.#world);
   }
 
+  /** Rebuild pathfinding terrain after a host adds, removes, or edits rooms in a shared world. */
+  refreshTerrain(): void {
+    this.#pathFinder = new PathFinder(
+      Object.entries(this.#world.terrain)
+        .filter(([room]) => /^[WE]\d+[NS]\d+$/.test(room))
+        .map(([room, terrain]) => ({ room, terrain })),
+    );
+  }
+
   tick(intents: TickIntents, manualIntents: ManualIntents = {}): TickResult {
     const world = this.#world;
+    // A shared-state host may advance the same generator between ticks (world maintenance).
+    this.#random.state = world.rngState;
     const gameTime = world.gameTime;
     const errors: SimulationError[] = [];
     const roomStats: RoomStats = {};

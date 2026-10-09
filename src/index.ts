@@ -23,3 +23,4 @@ export type {
 export * as constants from './constants.ts';
 export { storeIntents } from './utils/system.ts';
 export type { StoredUserIntents } from './utils/system.ts';
+export * as strongholds from './utils/strongholds.ts';
