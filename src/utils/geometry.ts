@@ -11,8 +11,8 @@ import type {
   PositionSource,
   RoomPosLike,
 } from '../types/index.ts';
-import { jsConcat, jsGt, jsLt } from './js.ts';
-import { isNaNValue, isNumber, isObject } from './lodash.ts';
+import { jsConcat, jsGt, jsLt, jsString } from './js.ts';
+import { isNaNValue, isNumber, isObject, isString } from './lodash.ts';
 import { getProp } from './tables.ts';
 
 export type DirectionOffset = readonly [dx: number, dy: number];
@@ -202,10 +202,12 @@ export function serializePath(path: unknown): string {
 }
 
 /** `Room.deserializePath`: inverse of {@link serializePath}. */
-export function deserializePath(path: unknown): PathStep[] {
-  if (typeof path !== 'string') {
+export function deserializePath(pathArg: unknown): PathStep[] {
+  if (!isString(pathArg)) {
     throw new Error('`path` is not a string');
   }
+  // `_.isString` also accepts String objects; upstream's string methods read their value.
+  const path = jsString(pathArg);
   const result: PathStep[] = [];
   if (!path.length) {
     return result;

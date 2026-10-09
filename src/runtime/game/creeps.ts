@@ -44,7 +44,7 @@ import { RoomPosition } from './room-position.ts';
 import type { Room } from './rooms.ts';
 import { Ruin } from './ruins.ts';
 import type { RawRoomObject } from './runtime-data.ts';
-import { memoryRoot, scope, username } from './scope.ts';
+import { prepareMemorySection, scope, username } from './scope.ts';
 import { Source } from './sources.ts';
 import { Store } from './store.ts';
 import {
@@ -1456,39 +1456,29 @@ defineGameObjectProperties(Creep.prototype, data, {
   },
 });
 
-function creepsMemory(): Record<string, unknown> {
-  const memory = memoryRoot();
-  if (isUndefined(memory.creeps) || memory.creeps === 'undefined') {
-    memory.creeps = {};
-  }
-  const creeps = memory.creeps;
-  return isObject(creeps) ? (creeps as Record<string, unknown>) : NOT_OBJECT;
-}
-
-/** Sentinel for a non-object `Memory.creeps`. */
-const NOT_OBJECT: Record<string, unknown> = Object.freeze({});
-
 Object.defineProperty(Creep.prototype, 'memory', {
   get(this: Creep): unknown {
     if (this.id && !this.my) {
       return undefined;
     }
-    const creeps = creepsMemory();
-    if (creeps === NOT_OBJECT) {
+    if (!prepareMemorySection('creeps', true)) {
       return undefined;
     }
-    const name = this.name;
-    return (creeps[name] = creeps[name] || {});
+    // `Memory.creeps[this.name] = Memory.creeps[this.name] || {}` (sloppy assignment, RHS value).
+    const { globals } = scope();
+    const creeps = getProp(globals.Memory, 'creeps');
+    const value: unknown = getProp(getProp(globals.Memory, 'creeps'), this.name) || {};
+    jsSetSloppy(creeps, this.name, value);
+    return value;
   },
   set(this: Creep, value: unknown): void {
     if (this.id && !this.my) {
       throw new Error("Could not set other player's creep memory");
     }
-    const creeps = creepsMemory();
-    if (creeps === NOT_OBJECT) {
+    if (!prepareMemorySection('creeps', true)) {
       throw new Error('Could not set creep memory');
     }
-    creeps[this.name] = value;
+    jsSetSloppy(getProp(scope().globals.Memory, 'creeps'), this.name, value);
   },
 });
 

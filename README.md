@@ -193,8 +193,11 @@ npm run conformance
 
 Setup clones missing references under `.reference/` and installs their locked
 JavaScript dependencies with lifecycle scripts disabled. It refuses changed
-tracked source or a different checkout revision. It does not install the old
-native driver. CI runs setup and both comparison suites on Windows and Ubuntu.
+tracked source or a different checkout revision. It also builds the pinned C++
+pathfinder with its locked `nan`/`node-gyp` toolchain, without installing the old
+driver's isolated-vm fork. This requires Python 3 and a C++20 build toolchain
+(MSVC on Windows; make/g++ on Ubuntu), plus network access for packages and Node
+headers. CI runs setup and conformance on Windows and Ubuntu.
 
 `conformance/runtime.mjs` compares player observations, intents and memory using
 the original runtime/game code through a constrained host adapter.
@@ -202,6 +205,17 @@ the original runtime/game code through a constrained host adapter.
 processor against `Simulation`. Each runner reports its exercised coverage,
 reference revisions, differences and normalization. An unexpected mismatch exits
 nonzero; a passing run establishes equivalence only for its scenarios.
+
+`conformance/pathfinder.mjs` compares the pinned driver wrapper and native addon
+against the TypeScript pathfinder: exact paths, operation counts, costs,
+completion, errors, callback ordering and argument coercion. The default run
+combines 173 fixed cases with 1,000 seeded cases. A missing or stale native oracle
+fails the suite; it is never replaced by a local implementation.
+
+```sh
+npm run conformance:pathfinder -- --seeds 10000 --start 800000
+npm run conformance:pathfinder -- --seed 800123
+```
 
 `npm run conformance` uses independent processing order and permits only the
 named, two-sided assertions listed in [CONFORMANCE.md](CONFORMANCE.md).
@@ -217,15 +231,16 @@ Infrastructure adapters must not implement the game rules being compared or
 discard semantic differences.
 
 These suites do not prove private MMO parity, hardware-independent CPU timing,
-native pathfinder equivalence, or upstream parallel-runner race behavior.
+exhaustive pathfinder equivalence, or upstream parallel-runner race behavior.
 Backend/world comparisons live in `@openscreeps/game`'s conformance suite.
 
 The runtime report separately identifies the hosted-only `Game.shard.access`
 extension, absent from the standalone reference. It compares shared fields and
 asserts the precise extension rather than claiming identical API surfaces.
-Native V8 TypeError wording is diagnostic only; malformed-memory probes compare
-error classes, failing operations and resulting state. Engine-generated gameplay
-results and return codes remain compared.
+Malformed-memory probes now compare error messages as well as classes, failing
+operations and resulting state. The oracle preserves upstream modules' original
+strict/sloppy mode. Native-backed runtime scenarios run in isolated processes to
+avoid contamination from the native addon's process-global terrain cache.
 
 See [CONFORMANCE.md](CONFORMANCE.md) for retained differences, reproductions,
 linked defect tickets and the distinction between independent and controlled

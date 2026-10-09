@@ -7,14 +7,32 @@ Reference revisions are recorded in `reference-versions.json` and runner output.
 
 ## Runtime
 
-| Case                         | Upstream behavior                                                               | Local behavior and decision                                                                                                                                                                            | Tracking                                                   |
-| ---------------------------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------- |
-| `Game.shard.access`          | Absent from the pinned standalone runtime.                                      | Retain the hosted-game API. The unrestricted fixture asserts an own property with value `true`; compare every shared shard field separately. This is not proof of hosted MMO equivalence.              | [engine#1](https://github.com/openscreeps/engine/issues/1) |
-| Malformed Memory diagnostics | TypeError messages include property-specific text such as `(reading 'creeps')`. | Retain the working implementation's diagnostics. Compare exception classes, which operations fail and resulting state; report both messages but exclude only the named TypeError.message probe fields. | [engine#3](https://github.com/openscreeps/engine/issues/3) |
+| Case                | Upstream behavior                          | Local behavior and decision                                                                                                                                                               | Tracking                                                   |
+| ------------------- | ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| `Game.shard.access` | Absent from the pinned standalone runtime. | Retain the hosted-game API. The unrestricted fixture asserts an own property with value `true`; compare every shared shard field separately. This is not proof of hosted MMO equivalence. | [engine#1](https://github.com/openscreeps/engine/issues/1) |
 
-Reproduce with `node conformance/runtime.mjs --scenario gameplay` and
-`node conformance/runtime.mjs --scenario invalid-memory`. The report separates
-`hostedApiExtensions` and `excludedDimensions` from shared comparisons.
+Reproduce the extension comparison with `node conformance/runtime.mjs --scenario gameplay`.
+The report separates `hostedApiExtensions` from shared comparisons.
+
+The expanded runtime suite covers 17 scenarios: spatial queries and RoomPosition
+coercion, terrain, path serialization, legacy pathfinding, map routing/status,
+CostMatrix, stores, Memory, and native-backed pathfinding. `native-paths` runs in
+its own process and loads the authentic addon inside the player isolate; its
+three ticks exercise PathFinder, room path APIs and `moveTo` path reuse. Other
+scenarios fail explicitly if they reach an unconfigured native search.
+
+The oracle preserves each upstream module's original source and strict/sloppy
+mode in separate wrappers. The previous esbuild output inadvertently forced
+sloppy modules into strict mode and renamed identifiers near direct eval.
+Correcting the oracle exposed primitive-Memory differences previously hidden by
+that adapter. The local memory accessors now preserve upstream's silent failed
+assignments on primitive roots and its null-root errors. The former diagnostic
+exclusion ([engine#3](https://github.com/openscreeps/engine/issues/3)) is removed:
+the exercised Memory errors now compare exactly, including messages.
+
+Additional corrected defects: boxed-string paths now deserialize as upstream,
+and RoomPosition accepts the same duck-typed room names. Reproduce with
+`--scenario legacy-paths`, `--scenario positions`, and `--scenario memory-root-number`.
 
 ## Corrected runtime defect
 
@@ -26,6 +44,34 @@ uses property-assignment semantics inside the isolate, without mutating a shared
 or host prototype. `memory-root-own-proto` compares both the property value and
 actual prototype classification, plus persistence. A failing-before and
 passing-after run was observed; the issue tracks publication status.
+
+## Native pathfinding
+
+`node conformance/pathfinder.mjs` executes the pinned driver's `lib/path-finder.js`
+and compiled native addon against `src/utils/pathfinder.ts`. It compares exact
+ordered paths, `ops`, `cost`, `incomplete`, result keys, errors, callback order,
+argument coercion and nested searches. Inputs are independently materialized on
+each side. Native terrain persists process-wide, so each case reloads the same
+fixed room set on both sides rather than accidentally retaining extra oracle rooms.
+
+The default suite contains 173 fixed cases and 1,000 deterministic seeded cases:
+room and world boundaries, ties, walls/swamps, matrices, multiple goals and
+ranges, flee, search limits, malformed inputs, callbacks and repeated searches.
+Use `--seeds N --start S` for a larger run or `--seed S` to replay a random case.
+Missing/stale native builds fail closed; run `npm run conformance:setup` with
+Python 3 and a C++20 build toolchain to build the pinned addon.
+
+The initial expanded comparison exposed two corrected port defects:
+
+- Goal-array traversal skipped sparse entries and made extra observable property
+  reads. It now follows the original lodash 3 traversal, including sparse entries.
+- Falsy, non-undefined room callbacks were silently disabled. They now fail when
+  upstream attempts to invoke them, preserving terrain-error precedence and the
+  already-at-goal short circuit.
+
+This is not exhaustive pathfinding proof. Process-terminating native heap errors,
+CPU termination and malformed terrain encodings above 3 are not exercised.
+The runtime's host-triggered removal of cached terrain is outside this comparison.
 
 ## Simulation
 
@@ -74,7 +120,9 @@ older snapshots without them initialize ordering from their object key order.
 ## Limits
 
 The runtime oracle uses original driver runtime/data and game code in a constrained
-host adapter. Native PathFinder, CPU/heap/termination behavior, parallel scheduling
-and hosted-only account/inter-shard services are not proven equivalent. Legacy
-pathfinding comparisons cover first-tick queries. Matching this suite does not
-establish full game parity or exact function source/stack-trace identity.
+host adapter. CPU/heap/termination behavior, parallel scheduling and hosted-only
+account/inter-shard services are not proven equivalent. Legacy pathfinding
+comparisons cover first-tick queries; the native-backed runtime scenario covers
+three ticks. Accessor-defined Memory sections, `Game.map.visual`, and webpack's
+process polyfills are not covered. Matching this suite does not establish full
+game parity or exact function source/stack-trace identity.

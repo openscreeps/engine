@@ -27,7 +27,7 @@ import {
 import { collectionValues, isObject, isString, sum } from '../../utils/lodash.ts';
 import { getProp } from '../../utils/tables.ts';
 import type { Effect, EffectCollection } from '../../simulation/state.ts';
-import { contains, isArray, isBoolean, isUndefined, uniq } from './compat.ts';
+import { contains, isArray, isBoolean, isUndefined, jsSetSloppy, uniq } from './compat.ts';
 import { Creep } from './creeps.ts';
 import {
   defineGameObjectProperties,
@@ -41,7 +41,7 @@ import { RoomObject, type RoomObjectEffect } from './room-object.ts';
 import { RoomPosition } from './room-position.ts';
 import type { Room } from './rooms.ts';
 import type { RawRoomObject } from './runtime-data.ts';
-import { memoryRoot, rawObject, scope, username } from './scope.ts';
+import { prepareMemorySection, rawObject, scope, username } from './scope.ts';
 import { Store } from './store.ts';
 
 let createdCreepNames: unknown[] = [];
@@ -189,14 +189,6 @@ function pluckIds(collection: unknown): unknown[] {
   return collectionValues(collection as Readonly<Record<string, unknown>> | null | undefined).map(
     (v): unknown => (v === null || v === undefined ? undefined : getProp(v, 'id')),
   );
-}
-
-function creepsMemory(): object | undefined {
-  if (isUndefined(memoryRoot().creeps)) {
-    memoryRoot().creeps = {};
-  }
-  const creeps: unknown = memoryRoot().creeps;
-  return isObject(creeps) ? creeps : undefined;
 }
 
 /** The temporary `Game.creeps[name]` object created by `createCreep`/`spawnCreep`. */
@@ -1402,8 +1394,9 @@ class StructureSpawnImpl extends OwnedStructure {
 
     createdCreepNames.push(name);
 
-    const memory = creepsMemory();
-    if (memory) {
+    // `if(_.isUndefined(Memory.creeps)) Memory.creeps = {}; if(_.isObject(Memory.creeps)) …`
+    if (prepareMemorySection('creeps', false)) {
+      const memory = getProp(scope().globals.Memory, 'creeps') as object;
       if (!isUndefined(creepMemory)) {
         Reflect.set(memory, propertyKey(name), creepMemory);
       } else {
@@ -1488,8 +1481,8 @@ class StructureSpawnImpl extends OwnedStructure {
 
     createdCreepNames.push(name);
 
-    const memory = creepsMemory();
-    if (memory) {
+    if (prepareMemorySection('creeps', false)) {
+      const memory = getProp(scope().globals.Memory, 'creeps') as object;
       const optionMemory: unknown = Reflect.get(options, 'memory');
       const existing: unknown = optionMemory || Reflect.get(memory, propertyKey(name));
       Reflect.set(memory, propertyKey(name), existing || {});
@@ -1613,36 +1606,30 @@ defineGameObjectProperties(StructureSpawn.prototype, rawObject, {
   store: storeGetter,
 });
 
-function spawnsMemory(): Record<string, unknown> | undefined {
-  const spawns: unknown = memoryRoot().spawns;
-  if (isUndefined(spawns) || spawns === 'undefined') {
-    memoryRoot().spawns = {};
-  }
-  const value: unknown = memoryRoot().spawns;
-  return isObject(value) ? (value as Record<string, unknown>) : undefined;
-}
-
 Object.defineProperty(StructureSpawn.prototype, 'memory', {
   get(this: StructureSpawn): unknown {
     if (!this.my) {
       return undefined;
     }
-    const spawns = spawnsMemory();
-    if (!spawns) {
+    if (!prepareMemorySection('spawns', true)) {
       return undefined;
     }
+    // `Memory.spawns[name] = Memory.spawns[name] || {}` (sloppy assignment, RHS value).
+    const { globals } = scope();
+    const spawns = getProp(globals.Memory, 'spawns');
     const name = String(rawObject(this.id).name);
-    return (spawns[name] = spawns[name] || {});
+    const value: unknown = getProp(getProp(globals.Memory, 'spawns'), name) || {};
+    jsSetSloppy(spawns, name, value);
+    return value;
   },
   set(this: StructureSpawn, value: unknown): void {
     if (!this.my) {
       throw new Error("Could not set other player's spawn memory");
     }
-    const spawns = spawnsMemory();
-    if (!spawns) {
+    if (!prepareMemorySection('spawns', true)) {
       throw new Error('Could not set spawn memory');
     }
-    spawns[String(rawObject(this.id).name)] = value;
+    jsSetSloppy(getProp(scope().globals.Memory, 'spawns'), String(rawObject(this.id).name), value);
   },
 });
 

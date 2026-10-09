@@ -979,19 +979,24 @@ export class PathFinder {
     const maxRooms = Math.min(64, Math.max(1, int32(prop(opts, 'maxRooms')) || 16));
     const flee = !!prop(opts, 'flee');
 
-    // Convert one-or-many goal into standard format for native extension
-    const goalList: unknown[] = Array.isArray(goal) ? (goal as unknown[]) : [goal];
-    const goals: Goal[] = goalList.map((item) => {
+    // Convert one-or-many goal into standard format for native extension. Upstream maps with lodash 3
+    // `arrayMap`: one `length` read, then every index (holes included) read in order.
+    const goalList: unknown = Array.isArray(goal) ? goal : [goal];
+    const goalCount = Number(prop(goalList, 'length'));
+    const goals: Goal[] = [];
+    for (let index = 0; index < goalCount; ++index) {
+      const item = prop(goalList, String(index));
       if (
         prop(item, 'x') !== undefined &&
         prop(item, 'y') !== undefined &&
         prop(item, 'roomName') !== undefined
       ) {
-        return { range: 0, ...toWorldPosition(item) };
+        goals.push({ range: 0, ...toWorldPosition(item) });
+      } else {
+        const range = Math.max(0, int32(prop(item, 'range')));
+        goals.push({ range, ...toWorldPosition(prop(item, 'pos')) });
       }
-      const range = Math.max(0, int32(prop(item, 'range')));
-      return { range, ...toWorldPosition(prop(item, 'pos')) };
-    });
+    }
 
     // Setup room callback
     const cb = prop(opts, 'roomCallback');
@@ -1005,6 +1010,13 @@ export class PathFinder {
           return prop(ret, '_bits');
         }
         return undefined;
+      };
+    } else if (cb !== undefined && !cb) {
+      // Upstream only discards truthy non-functions; any other falsy value reaches the native module,
+      // which treats everything but `undefined` as the callback and calls it when it loads the first
+      // room. V8 then throws a TypeError naming the JS call site, upstream's `mod.search(...)`.
+      roomCallback = () => {
+        throw new TypeError('mod.search is not a function');
       };
     }
 

@@ -28,9 +28,10 @@
     "format:check": "prettier --check .",
     "test": "node --test test/**/*.test.ts",
     "conformance:setup": "node conformance/setup.mjs",
-    "conformance": "node conformance/runtime.mjs && node conformance/simulation.mjs --allow-known-divergences",
-    "conformance:controlled": "node conformance/runtime.mjs && node conformance/simulation.mjs --controlled-order --allow-known-divergences",
-    "conformance:strict": "node conformance/runtime.mjs && node conformance/simulation.mjs",
+    "conformance": "node conformance/pathfinder.mjs && node conformance/runtime.mjs && node conformance/simulation.mjs --allow-known-divergences",
+    "conformance:controlled": "node conformance/pathfinder.mjs && node conformance/runtime.mjs && node conformance/simulation.mjs --controlled-order --allow-known-divergences",
+    "conformance:strict": "node conformance/pathfinder.mjs && node conformance/runtime.mjs && node conformance/simulation.mjs",
+    "conformance:pathfinder": "node conformance/pathfinder.mjs",
     "check": "npm run typecheck && npm run lint && npm run format:check && npm test && npm run build"
   },
   "license": "ISC",

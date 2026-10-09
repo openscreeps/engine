@@ -8,8 +8,9 @@
  */
 
 import { jsConcat, jsString } from '../../utils/js.ts';
-import { isString } from '../../utils/lodash.ts';
-import { isPlainObject } from './compat.ts';
+import { isObject, isString } from '../../utils/lodash.ts';
+import { getProp } from '../../utils/tables.ts';
+import { isPlainObject, isUndefined, jsSetSloppy } from './compat.ts';
 import type { IntentRecorder } from './intents.ts';
 import type { RawRoomObject, SandboxRuntimeData } from './runtime-data.ts';
 import type { EventLogEntry } from '../../simulation/state.ts';
@@ -252,18 +253,24 @@ export function setScope(value: GameScope): void {
 }
 
 /**
- * Reads `Memory` like player code does (`globals.Memory`), triggering the lazy parse. Throws the
- * same `TypeError` as upstream property access when the memory root is not an object.
+ * Upstream's sloppy-mode `if(_.isUndefined(globals.Memory[key]) || globals.Memory[key] === 'undefined')
+ * globals.Memory[key] = {};` followed by its `_.isObject(globals.Memory[key])` guard. Every read goes
+ * through `globals.Memory` again (lazy parse); null/undefined roots throw the property-access
+ * TypeError and primitive roots silently drop the assignment, exactly like upstream. The
+ * `'undefined'` string reset is skipped by spawn's creep-memory initialization.
  */
-export function memoryRoot(): Record<string, unknown> {
-  const memory: unknown = scope().globals.Memory;
-  if (memory === null || memory === undefined) {
-    throw new TypeError(`Cannot read properties of ${String(memory)}`);
+export function prepareMemorySection(
+  key: 'creeps' | 'rooms' | 'spawns',
+  resetUndefinedString: boolean,
+): boolean {
+  const { globals } = scope();
+  if (
+    isUndefined(getProp(globals.Memory, key)) ||
+    (resetUndefinedString && getProp(globals.Memory, key) === 'undefined')
+  ) {
+    jsSetSloppy(globals.Memory, key, {});
   }
-  if (typeof memory !== 'object') {
-    throw new TypeError('Memory is not an object');
-  }
-  return memory as Record<string, unknown>;
+  return isObject(getProp(globals.Memory, key));
 }
 
 /** Raw room object by id (`runtimeData.roomObjects[id]`), throwing like upstream `data(id)`. */

@@ -13,7 +13,7 @@ import { RoomPosition } from './room-position.ts';
 import { RoomObject } from './room-object.ts';
 import { AStarFinder, chebyshev, DijkstraFinder, Grid } from './legacy-pathfinding.ts';
 import { CostMatrix, PathFinder } from './path-finder.ts';
-import { memoryRoot, scope } from './scope.ts';
+import { prepareMemorySection, scope } from './scope.ts';
 import type { Flag } from './flags.ts';
 import type { StructureController, StructureStorage, StructureTerminal } from './structures.ts';
 import type { EventLogEntry } from '../../simulation/state.ts';
@@ -1043,29 +1043,22 @@ class RoomImpl {
   }
 
   get memory(): unknown {
-    const Memory = memoryRoot();
-    if (isUndefined(Memory.rooms) || Memory.rooms === 'undefined') {
-      Memory.rooms = {};
-    }
-    const rooms = Memory.rooms;
-    if (!isObject(rooms)) {
+    if (!prepareMemorySection('rooms', true)) {
       return undefined;
     }
-    const value: unknown = readProp(rooms, this.name) || {};
+    // `Memory.rooms[this.name] = Memory.rooms[this.name] || {}` (sloppy assignment, RHS value).
+    const { globals } = scope();
+    const rooms = getProp(globals.Memory, 'rooms');
+    const value: unknown = readProp(getProp(globals.Memory, 'rooms'), this.name) || {};
     writeProp(rooms, this.name, value);
     return value;
   }
 
   set memory(value: unknown) {
-    const Memory = memoryRoot();
-    if (isUndefined(Memory.rooms) || Memory.rooms === 'undefined') {
-      Memory.rooms = {};
-    }
-    const rooms = Memory.rooms;
-    if (!isObject(rooms)) {
+    if (!prepareMemorySection('rooms', true)) {
       throw new Error('Could not set room memory');
     }
-    writeProp(rooms, this.name, value);
+    writeProp(getProp(scope().globals.Memory, 'rooms'), this.name, value);
   }
 
   getEventLog(raw?: unknown): string | EventLogEntry[] {

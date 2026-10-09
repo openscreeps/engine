@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import { build } from 'esbuild';
 import ivm from 'isolated-vm';
 import { referenceRoot } from '../references.mjs';
+import { loadNativePathFinder, nativePathFinderAddonPath } from '../native.mjs';
 import { createOracleLoader } from './loader.mjs';
 import { attachFixtureStorage } from './storage.mjs';
 
@@ -27,39 +29,38 @@ const unavailable = new Proxy(
   },
 );
 
+const unusedInfrastructure =
+  'module.exports = new Proxy({}, {get() { throw new Error("Unavailable oracle infrastructure"); }});';
+
+// esbuild only RESOLVES the pinned runtime's module graph (metafile); the isolate script is then
+// assembled like upstream's webpack bundle: every module's original source text in its own
+// function wrapper with a module-scoped Buffer. esbuild's own output is not used because it
+// renames identifiers (e.g. `name` -> `name2` next to utils' direct eval, changing upstream
+// error messages) and would hoist a "use strict" from this repo's tsconfig over sloppy modules.
 async function runtimeBundle() {
+  const bufferEntry = localRequire.resolve('buffer/');
+  const runtimeEntry = resolve(driverRoot, 'lib/runtime/runtime.js');
   const result = await build({
-    entryPoints: [resolve(driverRoot, 'lib/runtime/runtime.js')],
+    entryPoints: [runtimeEntry, bufferEntry],
     bundle: true,
     write: false,
+    outdir: 'oracle-unused-output',
+    metafile: true,
     format: 'iife',
     platform: 'neutral',
-    target: 'es2022',
-    keepNames: true,
     mainFields: ['main', 'module'],
     logLevel: 'silent',
-    inject: ['oracle-buffer'],
+    tsconfigRaw: {},
     plugins: [
       {
         name: 'pinned-runtime-resolution',
         setup(builder) {
-          builder.onResolve({ filter: /^oracle-buffer$/ }, () => ({
-            path: 'oracle-buffer',
-            namespace: 'infrastructure',
-          }));
-          builder.onLoad({ filter: /^oracle-buffer$/, namespace: 'infrastructure' }, () => ({
-            contents: 'export { Buffer } from "oracle-buffer-package";',
-          }));
-          builder.onResolve({ filter: /^oracle-buffer-package$/ }, () => ({
-            path: localRequire.resolve('buffer/'),
-          }));
           builder.onResolve({ filter: /^util$|^@screeps\/core$/ }, (args) => ({
             path: args.path,
             namespace: 'unused-infrastructure',
           }));
           builder.onLoad({ filter: /.*/, namespace: 'unused-infrastructure' }, () => ({
-            contents:
-              'module.exports = new Proxy({}, {get() { throw new Error("Unavailable oracle infrastructure"); }});',
+            contents: unusedInfrastructure,
           }));
           builder.onResolve({ filter: /^~runtime-driver$/ }, () => ({
             path: resolve(driverRoot, 'lib/runtime/runtime-driver.js'),
@@ -81,14 +82,60 @@ async function runtimeBundle() {
       },
     ],
   });
-  return result.outputFiles[0].text;
+  const ids = new Map(Object.keys(result.metafile.inputs).map((key, index) => [key, index]));
+  const idOf = (path) => {
+    const key = Object.keys(result.metafile.inputs).find(
+      (input) => !input.includes(':') && resolve(input) === path,
+    );
+    assert.ok(key !== undefined, `Oracle module graph lacks ${path}`);
+    return ids.get(key);
+  };
+  const modules = Object.entries(result.metafile.inputs).map(([key, input]) => {
+    let source;
+    if (key.startsWith('unused-infrastructure:')) source = unusedInfrastructure;
+    else {
+      assert.ok(!key.includes(':'), `Unexpected oracle module namespace ${key}`);
+      source = readFileSync(resolve(key), 'utf8');
+      if (key.endsWith('.json')) source = `module.exports = ${source};`;
+    }
+    const requests = {};
+    for (const entry of input.imports) {
+      if (entry.external) continue;
+      assert.equal(entry.kind, 'require-call', `Unexpected ${entry.kind} in ${key}`);
+      requests[entry.original] = ids.get(entry.path);
+    }
+    return `[function (exports, require, module, __filename, __dirname, Buffer) {\n${source}\n}, ${JSON.stringify(requests)}]`;
+  });
+  return `(function () {
+var modules = [\n${modules.join(',\n')}\n];
+var cache = [];
+var Buffer;
+function load(id) {
+  if (cache[id]) return cache[id].exports;
+  var module = (cache[id] = { exports: {} });
+  var requests = modules[id][1];
+  modules[id][0].call(module.exports, module.exports, function (request) {
+    if (!Object.prototype.hasOwnProperty.call(requests, request)) throw new Error('Cannot find module "' + request + '"');
+    return load(requests[request]);
+  }, module, '/index.js', '/', Buffer);
+  return module.exports;
+}
+Buffer = load(${idOf(bufferEntry)}).Buffer;
+load(${idOf(runtimeEntry)});
+})();`;
 }
 
-// Real pinned runtime.js/game modules in a V8 isolate. The adapter replaces only storage RPC,
-// webpack's bundling/bootstrap and the unavailable native module; native search fails explicitly.
-// CPU billing, native heap/CPU termination and full driver/server scheduling are NOT conformance
-// claims. No gameplay return codes or intent rules are implemented in this adapter.
-export async function createRuntimeOracle({ now }) {
+// Native terrain is process-global inside the addon and never forgotten, so one process may load
+// exactly one terrain set; a different set fails closed instead of searching stale rooms.
+let nativeTerrainLoaded;
+
+// Real pinned runtime.js/game modules in a V8 isolate. The adapter replaces only storage RPC and
+// webpack's bundling/bootstrap. The native path finder is either the authentic pinned driver addon
+// (`nativeTerrain`: driver lib/path-finder.js `init` host-side plus a per-isolate
+// `ivm.NativeModule` instance exactly like driver user-vm.js) or a stub whose search fails
+// explicitly. CPU billing, native heap/CPU termination and full driver/server scheduling are NOT
+// conformance claims. No gameplay return codes or intent rules are implemented in this adapter.
+export async function createRuntimeOracle({ now, nativeTerrain }) {
   for (const [name, version] of [
     ['lodash', '3.10.1'],
     ['@screeps/pathfinding', '0.4.17'],
@@ -117,6 +164,20 @@ export async function createRuntimeOracle({ now }) {
   const utils = loader.load(resolve(engine, 'src/utils.js'));
   const dataModule = loader.load(resolve(driverRoot, 'lib/runtime/data.js'));
   const bundle = await runtimeBundle();
+  let nativeModule;
+  if (nativeTerrain) {
+    const rooms = Object.entries(nativeTerrain).map(([room, terrain]) => ({ room, terrain }));
+    const signature = JSON.stringify(rooms);
+    assert.ok(
+      nativeTerrainLoaded === undefined || nativeTerrainLoaded === signature,
+      'Native path finder terrain is process-global: run each native terrain set in its own process',
+    );
+    if (nativeTerrainLoaded === undefined) {
+      loader.load(resolve(driverRoot, 'lib/path-finder.js')).init(loadNativePathFinder(), rooms);
+      nativeTerrainLoaded = signature;
+    }
+    nativeModule = new ivm.NativeModule(nativePathFinderAddonPath);
+  }
   const states = {};
   const sandboxes = new Map();
   let connected = false;
@@ -147,9 +208,21 @@ export async function createRuntimeOracle({ now }) {
       await context.global.set('_isolate', isolate);
       await context.global.set('_context', context);
       await context.global.set('_worldSize', driver.getWorldSize());
-      await context.eval(
-        'global._nativeMod = { search() { throw new Error("Upstream native PathFinder search is excluded from this adapter"); } };',
-      );
+      if (nativeModule) {
+        assert.equal(
+          JSON.stringify(
+            Object.entries(world.terrain).map(([room, terrain]) => ({ room, terrain })),
+          ),
+          nativeTerrainLoaded,
+          'Player terrain must be the terrain loaded into the native path finder',
+        );
+        const instance = await nativeModule.create(context);
+        await context.global.set('_nativeMod', instance.derefInto());
+      } else {
+        await context.eval(
+          'global._nativeMod = { search() { throw new Error("Upstream native PathFinder search is excluded from this adapter"); } };',
+        );
+      }
       await context.global.set('_constants', new ivm.ExternalCopy(driver.constants).copyInto());
       await context.global.set('_customObjectPrototypes', new ivm.ExternalCopy([]).copyInto());
       await context.global.set('_customIntentTypes', new ivm.ExternalCopy({}).copyInto());

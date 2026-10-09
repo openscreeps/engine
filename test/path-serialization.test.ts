@@ -24,4 +24,9 @@ void describe('serialized room paths', () => {
   void it('rejects an invalid movement direction instead of creating corrupted coordinates', () => {
     assert.throws(() => deserializePath('090839'));
   });
+
+  void it('accepts String objects like lodash isString and rejects other non-strings', () => {
+    assert.deepEqual(deserializePath(new String('0908321')), deserializePath('0908321'));
+    assert.throws(() => deserializePath(['0908321']), /`path` is not a string/);
+  });
 });

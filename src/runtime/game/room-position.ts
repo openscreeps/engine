@@ -9,6 +9,7 @@
 import * as C from '../../constants.ts';
 import { clone, isArray, isUndefined } from './compat.ts';
 import { gameConstructor, type GameConstructor } from './define.ts';
+import { roomNameToXYLoose } from './map.ts';
 import {
   findClosestByPath2,
   lodashFilter,
@@ -55,18 +56,12 @@ export function getRoomNameFromXY(xx: number, yy: number): string {
   return roomName;
 }
 
-/** `utils.roomNameToXY(roomName)` with upstream's `sim` special case and property-access failures. */
+/** `utils.roomNameToXY(roomName)` with upstream's `sim` special case (`substr`/`charAt` on the value). */
 function worldXY(roomName: unknown): [number, number] {
   if (roomName === 'sim') {
     return [-kMaxWorldSize2, -kMaxWorldSize2];
   }
-  if (roomName === null || roomName === undefined) {
-    throw new TypeError(`Cannot read properties of ${String(roomName)} (reading 'substring')`);
-  }
-  if (typeof roomName !== 'string' && !(roomName instanceof String)) {
-    throw new TypeError('name.substring is not a function');
-  }
-  return roomNameToXY(String(roomName));
+  return roomNameToXYLoose(roomName);
 }
 
 /** Upstream `v < 0 || v > 49 || v !== v` on a raw value (same evaluation order). */

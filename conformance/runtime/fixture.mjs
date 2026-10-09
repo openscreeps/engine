@@ -219,3 +219,129 @@ export function fixture() {
   };
   return world;
 }
+
+function terrain(paint) {
+  const cells = Array(2500).fill('0');
+  const rect = (x1, y1, x2, y2, value) => {
+    for (let y = y1; y <= y2; y++) for (let x = x1; x <= x2; x++) cells[y * 50 + x] = value;
+  };
+  paint?.(rect);
+  return cells.join('');
+}
+const edges = { t: [0, 0, 49, 0], r: [49, 0, 49, 49], b: [0, 49, 49, 49], l: [0, 0, 0, 49] };
+function walled(...sides) {
+  return (rect) => sides.forEach((side) => rect(...edges[side], '1'));
+}
+
+// Shared world for the targeted core API scenarios: a 3x3 accessible room block with one-sided
+// exits, an isolated room, every room-status class, mixed wall/swamp/wall+swamp terrain codes,
+// legacy-path obstacles and resource-specific stores. Same documents feed both engines.
+export function spatialWorld(world) {
+  world.terrain.W1N1 = terrain((rect) => {
+    walled('r', 'b')(rect);
+    rect(0, 0, 49, 0, '1');
+    rect(20, 0, 22, 0, '0');
+    rect(0, 20, 0, 25, '2');
+    rect(0, 30, 0, 30, '3');
+    rect(17, 3, 17, 20, '1');
+    rect(17, 8, 17, 8, '0');
+    rect(18, 10, 21, 14, '2');
+    rect(29, 29, 31, 31, '1');
+    rect(30, 30, 30, 30, '0');
+    rect(35, 35, 36, 35, '3');
+  });
+  const rooms = {
+    W0N1: terrain(walled('r')),
+    E0N1: terrain(walled('t', 'r', 'b', 'l')),
+    W2N1: terrain(walled('t')),
+    W1N2: terrain(),
+    W0N2: terrain(),
+    W2N2: terrain(),
+    W1N0: terrain(),
+    W0N0: terrain(walled('t')),
+    W2N0: terrain(),
+    W3N1: terrain(),
+    W3N2: terrain(),
+    W3N0: terrain(),
+    W1N3: terrain(),
+    W2N3: terrain(),
+    W0N3: terrain(),
+  };
+  Object.assign(world.terrain, rooms);
+  for (const name of Object.keys(rooms)) world.rooms[name] = { _id: name, status: 'normal' };
+  Object.assign(world.rooms.W3N1, { novice: NOW + 5000 });
+  Object.assign(world.rooms.W3N2, { respawnArea: NOW + 7000 });
+  Object.assign(world.rooms.W3N0, { openTime: NOW + 9000 });
+  Object.assign(world.rooms.W1N3, { status: 'out of borders' });
+  Object.assign(world.rooms.W2N3, { openTime: NOW - 1000 });
+  Object.assign(world.rooms.W0N3, { novice: NOW - 10 });
+  function object(id, type, x, y, extra = {}) {
+    world.roomObjects[id] = { _id: id, type, room: 'W1N1', x, y, ...extra };
+  }
+  object('road2', 'road', 16, 8, { hits: 5000, hitsMax: 5000, nextDecayTime: 900 });
+  object('road3', 'road', 18, 8, { hits: 5000, hitsMax: 5000, nextDecayTime: 900 });
+  object('foreignRampart', 'rampart', 20, 12, { user: 'u2', hits: 1, hitsMax: 1, isPublic: false });
+  object('ownRampart', 'rampart', 21, 15, { user: 'u1', hits: 1, hitsMax: 1, isPublic: false });
+  object('spawnSite', 'constructionSite', 22, 10, {
+    user: 'u1',
+    structureType: 'spawn',
+    progress: 0,
+    progressTotal: 15000,
+  });
+  object('foreignSite', 'constructionSite', 23, 10, {
+    user: 'u2',
+    structureType: 'spawn',
+    progress: 0,
+    progressTotal: 15000,
+  });
+  const owned = { user: 'u1', hits: 1000, hitsMax: 1000 };
+  object('storage', 'storage', 40, 41, {
+    ...owned,
+    store: { energy: 5000, H: 300, power: 10 },
+    storeCapacity: 1000000,
+  });
+  object('factory', 'factory', 41, 41, {
+    ...owned,
+    store: { energy: 100, battery: 5 },
+    storeCapacity: 50000,
+    cooldownTime: 0,
+  });
+  object('nuker', 'nuker', 42, 41, {
+    ...owned,
+    store: { energy: 1000, G: 100 },
+    storeCapacityResource: { energy: 300000, G: 5000 },
+    cooldownTime: 0,
+  });
+  object('powerSpawn', 'powerSpawn', 43, 41, {
+    ...owned,
+    store: { energy: 500, power: 20 },
+    storeCapacityResource: { energy: 5000, power: 100 },
+  });
+  object('extension', 'extension', 44, 41, {
+    ...owned,
+    store: { energy: 0 },
+    storeCapacityResource: { energy: 200 },
+  });
+  object('overfilled', 'container', 45, 41, {
+    hits: 1000,
+    hitsMax: 1000,
+    store: { energy: 1500, H: 900 },
+    storeCapacity: 2000,
+    nextDecayTime: 500,
+  });
+  object('emptyLab', 'lab', 46, 41, {
+    ...owned,
+    store: { energy: 0 },
+    storeCapacity: 5000,
+    storeCapacityResource: { energy: 2000 },
+    cooldown: 0,
+  });
+  object('foreignStorage', 'storage', 47, 41, {
+    user: 'u2',
+    hits: 1000,
+    hitsMax: 1000,
+    store: { energy: 7, O: 0 },
+    storeCapacity: 1000000,
+  });
+  return world;
+}
