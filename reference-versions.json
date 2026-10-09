@@ -1,0 +1,12 @@
+{
+  "engine": {
+    "repository": "https://github.com/screeps/engine",
+    "commit": "a90d26fc9eb943147799e65d0bf9d4d0d79a2722",
+    "license": "ISC"
+  },
+  "common": {
+    "repository": "https://github.com/screeps/common",
+    "commit": "2fb779b26eef9b4b0f412584f6bd47c897949766",
+    "license": "ISC"
+  }
+}
