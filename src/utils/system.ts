@@ -226,7 +226,11 @@ export interface StoredUserIntents {
   global?: GlobalIntents;
 }
 
-/** Strict-mode JS `target[key] = value` on an arbitrary value. */
+/** Destination dictionaries must never follow inherited host properties or invoke their setters. */
+function getOwnProp(target: unknown, key: PropertyKey): unknown {
+  return isObject(target) && Object.hasOwn(target, key) ? Reflect.get(target, key) : undefined;
+}
+
 function setProp(target: unknown, key: PropertyKey, value: unknown): void {
   if (target === null || target === undefined) {
     throw new TypeError(`Cannot set properties of ${String(target)} (setting '${String(key)}')`);
@@ -234,7 +238,14 @@ function setProp(target: unknown, key: PropertyKey, value: unknown): void {
   if (!isObject(target)) {
     throw new TypeError(`Cannot create property '${String(key)}' on ${typeof target}`);
   }
-  if (!Reflect.set(target, key, value)) {
+  if (
+    !Reflect.defineProperty(target, key, {
+      value,
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    })
+  ) {
     throw new TypeError(`Cannot assign to read only property '${String(key)}' of object`);
   }
 }
@@ -327,13 +338,13 @@ export function sanitizeUserRoomIntents(
   groupingField = 'roomName',
 ): void {
   const store = (name: string, sanitized: SanitizedCustomIntent): void => {
-    // Upstream: `(result[g] = result[g] || {}).room = ... || {}`, then `(room[name] = room[name] || []).push(x)`.
+    // Preserve insertion order and payload grouping, but only reuse owned destination buckets.
     const groupingValue = String(sanitized[groupingField]);
-    const roomNameResult = getProp(rooms, groupingValue) || {};
+    const roomNameResult = getOwnProp(rooms, groupingValue) || {};
     setProp(rooms, groupingValue, roomNameResult);
-    const roomResult = getProp(roomNameResult, 'room') || {};
+    const roomResult = getOwnProp(roomNameResult, 'room') || {};
     setProp(roomNameResult, 'room', roomResult);
-    const list = getProp(roomResult, name) || [];
+    const list = getOwnProp(roomResult, name) || [];
     setProp(roomResult, name, list);
     callMethod(list, 'push', [sanitized]);
   };
@@ -417,8 +428,7 @@ export function storeIntents(
         objectIntents[name] = sanitizeIntent(name, payload, customIntentTypes);
       }
     }
-    // Upstream: `intents[room] = intents[room] || {}; intents[room][id] = ...`.
-    const roomBucket = getProp(intents.rooms, roomName) || {};
+    const roomBucket = getOwnProp(intents.rooms, roomName) || {};
     setProp(intents.rooms, roomName, roomBucket);
     setProp(roomBucket, key, objectIntents);
   }

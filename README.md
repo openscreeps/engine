@@ -142,6 +142,8 @@ player API is bundled into that isolate so objects, arrays, prototypes, and bot
 modifications belong to the player's realm. Heap limits and execution deadlines
 are enforced by the runtime. An isolate is not an operating-system process;
 production hosting should additionally contain the Node process and its resources.
+Host-side intent routing uses own data properties for destination dictionaries:
+untrusted room and object names cannot reuse or modify inherited host properties.
 
 The runtime bundles the upstream-compatible Lodash and Buffer versions for bot
 compatibility. Native dependencies can require a supported prebuilt binary or a
