@@ -15,6 +15,7 @@ import * as game from '../game/game.ts';
 import type { HeapStatistics } from '../game/game.ts';
 import { takeLocalChange } from '../game/inter-shard-memory.ts';
 import { IntentRecorder } from '../game/intents.ts';
+import { resetTerrain as resetPathFinderTerrain } from '../game/path-finder.ts';
 import { createRawMemory, type SegmentRequests } from '../game/raw-memory.ts';
 import type {
   MapGrid,
@@ -55,6 +56,7 @@ const system = Object.freeze({
   reflectGet: Reflect.get,
   reflectApply: Reflect.apply,
   reflectOwnKeys: Reflect.ownKeys,
+  reflectDeleteProperty: Reflect.deleteProperty,
   reflectGetOwnPropertyDescriptor: Reflect.getOwnPropertyDescriptor,
   toNumber: Number,
   arrayIsArray: Array.isArray,
@@ -442,10 +444,17 @@ const entry: SandboxEntry = Object.freeze({
     }
   },
   setStaticTerrainData(buffer: ArrayBuffer, roomOffsets: string): void {
+    // Each load carries the complete terrain: removed rooms disappear and every cache derived from
+    // the replaced arrays (map exit grid, PathFinder terrain) is rebuilt; player globals are kept.
     const offsets = system.jsonParse(roomOffsets) as Record<string, number>;
+    for (const room of system.objectKeys(staticTerrainData)) {
+      system.reflectDeleteProperty(staticTerrainData, room);
+    }
     for (const [room, offset] of system.objectEntries(offsets)) {
       staticTerrainData[room] = new Uint8Array(buffer, offset, 2500);
     }
+    mapGrid = undefined;
+    resetPathFinderTerrain();
   },
   run(data: string, cpu: number, cpuBucket: number): SandboxResultMessage {
     try {

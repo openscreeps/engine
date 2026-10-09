@@ -348,7 +348,11 @@ export class BotRuntime implements Disposable {
     Reflect.deleteProperty(this.#users, userId);
   }
 
-  /** Invalidate terrain after a host edits existing rooms without changing their names. */
+  /**
+   * Invalidate terrain after a host edits existing rooms without changing their names (added or
+   * removed rooms are detected automatically). Each player isolate reloads the terrain and rebuilds
+   * its PathFinder and map exit caches before its next run, without a global reset.
+   */
   refreshTerrain(): void {
     this.#assertActive();
     for (const userId in this.#running) this.#assertIdle(userId);

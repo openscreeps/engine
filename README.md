@@ -114,7 +114,9 @@ serialization turns into `null`.
   removing, or editing room terrain. Between-tick maintenance can advance `world.rngState`;
   the simulation resumes from that state on its next tick.
   When hosting `BotRuntime` separately, also call `runtime.refreshTerrain()` after
-  terrain edits; this updates existing player isolates without a global reset.
+  terrain edits; this updates existing player isolates, PathFinder terrain and map
+  exits without a global reset. Added or removed rooms invalidate the terrain pack
+  automatically; removed rooms no longer retain player-side terrain caches.
   `runtime.removeUser(userId)` releases a retired user's isolate and persistent
   runtime data.
 - `engine.snapshot()` contains the world plus persistent runtime data.

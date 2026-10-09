@@ -93,8 +93,8 @@ export interface PathFinderApi {
   use(isActive: unknown): void;
 }
 
+/** Finder over the current `staticTerrainData`; dropped by `resetTerrain` when the host replaces it. */
 let terrainPathFinder: TerrainPathFinder | undefined;
-const loadedRooms = new Set<string>();
 
 /**
  * The register of the tick that created `PathFinder` (upstream closes over the first `make` call's
@@ -102,23 +102,23 @@ const loadedRooms = new Set<string>();
  */
 let pathFinderRegister: Register | undefined;
 
-/** Loads terrain of rooms that appeared in `staticTerrainData` since the last call. */
+/**
+ * Discards the finder built from the previous `staticTerrainData` after the host replaced the terrain
+ * (edited or removed rooms must not stay searchable). The player's `PathFinder` global is kept.
+ */
+export function resetTerrain(): void {
+  terrainPathFinder = undefined;
+}
+
+/** The finder for the current `staticTerrainData`, built once per terrain load. */
 function syncTerrain(): TerrainPathFinder {
-  const finder = terrainPathFinder ?? new TerrainPathFinder();
-  terrainPathFinder = finder;
-  const terrainData = scope().runtimeData.staticTerrainData;
-  const added: { room: string; terrain: Uint8Array }[] = [];
-  for (const room of Object.keys(terrainData)) {
-    const terrain = terrainData[room];
-    if (terrain && !loadedRooms.has(room)) {
-      loadedRooms.add(room);
-      added.push({ room, terrain });
-    }
+  if (!terrainPathFinder) {
+    const terrainData = scope().runtimeData.staticTerrainData;
+    terrainPathFinder = new TerrainPathFinder(
+      Object.entries(terrainData).map(([room, terrain]) => ({ room, terrain })),
+    );
   }
-  if (added.length) {
-    finder.loadTerrain(added);
-  }
-  return finder;
+  return terrainPathFinder;
 }
 
 export const PathFinder: PathFinderApi = Object.create(Object.prototype, {
