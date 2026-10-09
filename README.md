@@ -111,6 +111,10 @@ serialization turns into `null`.
   mutate that world during a tick. Call `simulation.refreshTerrain()` after adding,
   removing, or editing room terrain. Between-tick maintenance can advance `world.rngState`;
   the simulation resumes from that state on its next tick.
+  When hosting `BotRuntime` separately, also call `runtime.refreshTerrain()` after
+  terrain edits; this updates existing player isolates without a global reset.
+  `runtime.removeUser(userId)` releases a retired user's isolate and persistent
+  runtime data.
 - `engine.snapshot()` contains the world plus persistent runtime data.
   `Engine.restore(snapshot, options)` restores a separate engine. JavaScript heap
   globals are not serialized: restoring performs a global reset while preserving

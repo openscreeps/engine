@@ -167,7 +167,7 @@ export interface RoomObject extends Partial<Record<ResourceType, number>> {
   ageTime?: number;
   spawning?: boolean | SpawningInfo | null;
   interRoom?: RoomPositionData | null;
-  userSummoned?: boolean;
+  userSummoned?: string;
   noCapacityRecalc?: boolean;
   tombstoneDecay?: number;
   memory_move?: MemoryMove | null;

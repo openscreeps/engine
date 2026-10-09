@@ -258,7 +258,7 @@ export class BotRuntime implements Disposable {
   readonly #running: Record<string, Promise<unknown>> = {};
   #lastCodeTimestamp: number;
   #terrain: TerrainPack | undefined;
-  #terrainSignature = '';
+  #terrainSignature: string | undefined;
   #disposed = false;
 
   constructor(options: BotRuntimeOptions = {}) {
@@ -339,6 +339,20 @@ export class BotRuntime implements Disposable {
       throw new Error(`"${String(id)}" is not a valid segment ID`);
     }
     this.#user(userId).segments[id] = data;
+  }
+
+  /** Release a removed server account's isolate and all of its local persistent runtime data. */
+  removeUser(userId: string): void {
+    this.#assertIdle(userId);
+    this.#clear(userId);
+    Reflect.deleteProperty(this.#users, userId);
+  }
+
+  /** Invalidate terrain after a host edits existing rooms without changing their names. */
+  refreshTerrain(): void {
+    this.#assertActive();
+    for (const userId in this.#running) this.#assertIdle(userId);
+    this.#terrainSignature = undefined;
   }
 
   /** Queues a console expression evaluated after the next main loop (`users.console`). */
