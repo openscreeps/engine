@@ -6,6 +6,7 @@
  * <contact@screeps.com>, used under the ISC license (see THIRD_PARTY_NOTICES.md).
  */
 
+import { processAccountIntents } from './global/account.ts';
 import { processMarketIntents } from './global/market.ts';
 import { processPowerIntents } from './global/power.ts';
 import type { GlobalScope } from './scope.ts';
@@ -13,8 +14,9 @@ import type { RoomObject } from './state.ts';
 
 /**
  * Moves creeps that crossed room edges or portals into accessible rooms, then processes power
- * creep account intents and the market. `interRoomCreeps` are creeps/power creeps with a pending
- * `interRoom`; `accessibleRooms` are rooms with status `normal` that are already open.
+ * creep account intents, the market, and account intents (pixels, CPU unlocks). `interRoomCreeps`
+ * are creeps/power creeps with a pending `interRoom`; `accessibleRooms` are rooms with status
+ * `normal` that are already open.
  */
 export function processGlobal(
   scope: GlobalScope,
@@ -43,4 +45,5 @@ export function processGlobal(
 
   processPowerIntents(scope);
   processMarketIntents(scope);
+  processAccountIntents(scope);
 }

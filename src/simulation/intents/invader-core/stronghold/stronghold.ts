@@ -15,7 +15,7 @@ import type {
   StoreCapacityResource,
   StrongholdPopulationEntry,
 } from '../../../state.ts';
-import { lookup, shuffle } from '../../../support.ts';
+import { lookup, shuffle, effectList } from '../../../support.ts';
 import { createEnergy } from '../../create-energy.ts';
 import { creepDie } from '../../creeps/die.ts';
 import { destroyStructure } from '../../structures/destroy.ts';
@@ -360,7 +360,7 @@ function focusMax(context: StrongholdContext): boolean {
           (C.TOWER_FALLOFF_RANGE - C.TOWER_OPTIMAL_RANGE);
       }
       for (const power of [C.PWR_OPERATE_TOWER, C.PWR_DISRUPT_TOWER] as const) {
-        const effect = (tower.effects ?? []).find((e) => e.power === power);
+        const effect = effectList(tower.effects).find((e) => e.power === power);
         if (effect && effect.endTime > gameTime) {
           amount *= C.POWER_INFO[power].effect[(effect.level as number) - 1] as number;
         }

@@ -7,7 +7,7 @@ import * as C from '../../../constants.ts';
 import { getReactionVariants } from '../../../utils/index.ts';
 import type { IntentArgs, RoomScope } from '../../scope.ts';
 import type { ActionLog, RoomObject, Store, StoreCapacityResource } from '../../state.ts';
-import { lookup, powerEffect } from '../../support.ts';
+import { lookup, powerEffect, effectList } from '../../support.ts';
 
 function labMineralType(store: Store | undefined): string | undefined {
   if (!store) return undefined;
@@ -30,7 +30,7 @@ export function labReverseReaction(
   }
 
   let reactionAmount: number = C.LAB_REACTION_AMOUNT;
-  const effect = object.effects?.find((e) => e.power === C.PWR_OPERATE_LAB);
+  const effect = effectList(object.effects).find((e) => e.power === C.PWR_OPERATE_LAB);
   if (effect && effect.endTime > gameTime) {
     reactionAmount += powerEffect(C.PWR_OPERATE_LAB, effect.level);
   }

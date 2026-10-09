@@ -6,7 +6,7 @@
 import * as C from '../../../constants.ts';
 import type { RoomScope } from '../../scope.ts';
 import type { RoomObject, SpawningInfo } from '../../state.ts';
-import { isEqual } from '../../support.ts';
+import { isEqual, effectList } from '../../support.ts';
 import { bornCreep } from '../spawns/born-creep.ts';
 
 export function tickInvaderCore(object: RoomObject | undefined, scope: RoomScope): void {
@@ -14,7 +14,9 @@ export function tickInvaderCore(object: RoomObject | undefined, scope: RoomScope
 
   const { roomObjects, roomController, bulk, roomInfo, gameTime } = scope;
 
-  const collapseEffect = (object.effects ?? []).find((e) => e.effect === C.EFFECT_COLLAPSE_TIMER);
+  const collapseEffect = effectList(object.effects).find(
+    (e) => e.effect === C.EFFECT_COLLAPSE_TIMER,
+  );
   if (collapseEffect && collapseEffect.endTime <= gameTime) {
     if (roomController) {
       bulk.update(roomController, {

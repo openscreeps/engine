@@ -6,7 +6,7 @@
 import * as C from '../../../constants.ts';
 import type { RoomScope } from '../../scope.ts';
 import type { RoomObject } from '../../state.ts';
-import { lookup, powerEffect } from '../../support.ts';
+import { lookup, powerEffect, effectList } from '../../support.ts';
 
 export function tickStorage(object: RoomObject, scope: RoomScope): void {
   const { bulk, roomController, gameTime } = scope;
@@ -18,7 +18,7 @@ export function tickStorage(object: RoomObject, scope: RoomScope): void {
         ? C.STORAGE_CAPACITY
         : 0;
     if (storeCapacity > 0) {
-      const effect = object.effects?.find((e) => e.power === C.PWR_OPERATE_STORAGE);
+      const effect = effectList(object.effects).find((e) => e.power === C.PWR_OPERATE_STORAGE);
       if (effect && effect.endTime > gameTime) {
         storeCapacity += powerEffect(C.PWR_OPERATE_STORAGE, effect.level);
       }

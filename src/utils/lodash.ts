@@ -8,6 +8,8 @@
  * Reporters & Editors. Available under MIT license <https://lodash.com/license>.
  */
 
+import { getProp } from './tables.ts';
+
 /** `Object.prototype.toString` tag of a value, as lodash's internal tag lookup. */
 function tagOf(value: unknown): string {
   return Object.prototype.toString.call(value);
@@ -43,26 +45,25 @@ function isLength(value: unknown): value is number {
   return typeof value === 'number' && value > -1 && value % 1 === 0 && value <= MAX_SAFE_INTEGER;
 }
 
-function isArrayLike(value: unknown): value is ArrayLike<unknown> {
-  return isObjectLike(value) && 'length' in value && isLength(value.length);
-}
-
-/** Values of a collection in lodash `baseEach` order (indices for array-likes, own enumerable keys otherwise). */
+/**
+ * Values of a collection in lodash 3 `baseEach` order: truthy values with a valid `length` (arrays,
+ * strings, functions, other array-likes) are read by index from `Object(collection)`, holes included;
+ * other objects yield their own enumerable string-keyed values; remaining primitives yield nothing.
+ */
 export function collectionValues<T>(
   collection: Readonly<Record<string, T>> | readonly T[] | null | undefined,
-): T[] {
-  if (collection === null || collection === undefined) {
+): T[];
+export function collectionValues(collection: unknown): unknown[];
+export function collectionValues(collection: unknown): unknown[] {
+  if (!collection) {
     return [];
   }
-  if (Array.isArray(collection)) {
-    return collection.slice() as T[];
+  const iterable = Object(collection) as object;
+  const length = getProp(iterable, 'length');
+  if (isLength(length)) {
+    return Array.from({ length }, (_unused, index) => getProp(iterable, index));
   }
-  if (isArrayLike(collection)) {
-    // Array-like check above mirrors lodash's baseEach dispatch; elements are the collection's T values.
-    const arrayLike: ArrayLike<T> = collection;
-    return Array.from(arrayLike);
-  }
-  return Object.values(collection);
+  return isObject(collection) ? Object.values(collection) : [];
 }
 
 /** `_.size`. */

@@ -4,7 +4,9 @@
  */
 
 import * as C from '../constants.ts';
+import { jsAdd, jsBitAnd, jsGt, jsMul, toNumber } from './js.ts';
 import { collectionValues } from './lodash.ts';
+import { getProp } from './tables.ts';
 
 /**
  * Room terrain as stored in the world: either the 2500-character string of digits (`y * 50 + x`)
@@ -118,15 +120,22 @@ export function decodeTerrainByRoom(items: Collection<TerrainDocument>): Decoded
   return result;
 }
 
-/** Whether the terrain tile at `(x, y)` has any bit of `mask` set. */
+/**
+ * Whether the terrain tile at `(x, y)` has any bit of `mask` set. Coordinates may be raw player values:
+ * the index is computed with JS `y * 50 + x` semantics (string concatenation included) like upstream.
+ */
 export function checkTerrain(
   terrain: RoomTerrainData,
-  x: number,
-  y: number,
+  x: unknown,
+  y: unknown,
   mask: number,
 ): boolean {
-  const code =
-    terrain instanceof Uint8Array ? terrain[y * 50 + x] : Number(terrain.charAt(y * 50 + x));
-  // An out-of-range Uint8Array read is `undefined`, which upstream coerced to 0 via `&`.
-  return ((code ?? 0) & mask) > 0;
+  const index = jsAdd(jsMul(y, 50), x);
+  // Reflect.get applies ToPropertyKey (typed-array canonical numeric keys included), like `terrain[index]`;
+  // `charAt` applies ToIntegerOrInfinity to the numeric index.
+  const code: unknown =
+    terrain instanceof Uint8Array
+      ? getProp(terrain, typeof index === 'bigint' ? index.toString() : index)
+      : Number(terrain.charAt(toNumber(index)));
+  return jsGt(jsBitAnd(code, mask), 0);
 }

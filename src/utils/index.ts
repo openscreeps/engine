@@ -7,6 +7,7 @@
 export * from './calc.ts';
 export * from './diff.ts';
 export * from './geometry.ts';
+export * from './js.ts';
 export * from './notifications.ts';
 export * from './path-utils.ts';
 export * from './pathfinder.ts';
@@ -16,4 +17,4 @@ export * from './system.ts';
 export * from './terrain.ts';
 export * as strongholds from './strongholds.ts';
 export * as lodash from './lodash.ts';
-export { ownValue } from './tables.ts';
+export { getProp, ownValue } from './tables.ts';

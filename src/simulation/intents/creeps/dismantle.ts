@@ -7,7 +7,7 @@ import * as C from '../../../constants.ts';
 import { calcBodyEffectiveness, calcResources } from '../../../utils/index.ts';
 import type { IntentArgs, RoomScope } from '../../scope.ts';
 import type { RoomObject } from '../../state.ts';
-import { lookup } from '../../support.ts';
+import { lookup, effectList } from '../../support.ts';
 import { applyDamage } from '../damage.ts';
 import { drop } from './drop.ts';
 
@@ -51,7 +51,7 @@ export function creepDismantle(
   const amount = Math.min(power, target.hits as number);
   let energyGain = Math.floor(amount * C.DISMANTLE_COST);
 
-  const effect = (target.effects ?? []).find(
+  const effect = effectList(target.effects).find(
     (e) =>
       e.endTime >= gameTime &&
       (e.power === C.PWR_SHIELD ||

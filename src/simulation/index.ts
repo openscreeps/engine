@@ -10,6 +10,7 @@
  * <contact@screeps.com>, used under the ISC license (see THIRD_PARTY_NOTICES.md).
  */
 
+import { hasShardAccess } from './global/account.ts';
 import { PathFinder } from '../utils/pathfinder.ts';
 import { calcWorldSize } from '../utils/rooms.ts';
 import type { StoredUserIntents } from '../utils/system.ts';
@@ -227,6 +228,15 @@ export class Simulation {
       }
     }
 
+    // Restricted shards: keep the upstream `shardAccess` flag (read by claim/reserve/upgrade) in sync
+    // with the access expiry; other shards leave the flag to the embedder.
+    if (world.restrictedShard) {
+      const now = this.#now();
+      for (const user of Object.values(world.users)) {
+        user.shardAccess = hasShardAccess(user, now);
+      }
+    }
+
     // Rooms queue (upstream getAllRoomsNames consumes the active rooms set).
     world.activeRooms = [];
     const objectsByRoom = new Map<string, string[]>();
@@ -427,6 +437,7 @@ export class Simulation {
       env,
       gameTime: world.gameTime,
       shardName: world.shardName,
+      restrictedShard: world.restrictedShard,
       userIntents,
       usersById,
       roomObjectsByType,

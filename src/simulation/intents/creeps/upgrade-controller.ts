@@ -6,7 +6,7 @@
 import * as C from '../../../constants.ts';
 import type { IntentArgs, RoomScope } from '../../scope.ts';
 import type { ActionLog, RoomObject } from '../../state.ts';
-import { lookup } from '../../support.ts';
+import { lookup, effectList } from '../../support.ts';
 
 export function creepUpgradeController(
   object: RoomObject,
@@ -65,7 +65,7 @@ export function creepUpgradeController(
 
   if (target.level === 8) {
     let limit: number = C.CONTROLLER_MAX_UPGRADE_PER_TICK;
-    const effect = (target.effects ?? []).find((e) => e.power === C.PWR_OPERATE_CONTROLLER);
+    const effect = effectList(target.effects).find((e) => e.power === C.PWR_OPERATE_CONTROLLER);
     if (effect && effect.endTime >= gameTime) {
       limit += C.POWER_INFO[C.PWR_OPERATE_CONTROLLER].effect[
         (effect.level as number) - 1

@@ -6,6 +6,7 @@
 import * as C from '../../../constants.ts';
 import type { IntentArgs, RoomScope } from '../../scope.ts';
 import type { ActionLog, RoomObject } from '../../state.ts';
+import { effectList } from '../../support.ts';
 
 export function creepAttackController(
   object: RoomObject,
@@ -40,7 +41,7 @@ export function creepAttackController(
     return;
   }
   if (
-    (target.effects ?? []).some(
+    effectList(target.effects).some(
       (e) => e.effect === C.EFFECT_INVULNERABILITY && e.endTime > gameTime,
     )
   ) {

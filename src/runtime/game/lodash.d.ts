@@ -3,10 +3,10 @@
  * `runInContext()` instance (exactly like upstream); the game API itself does not call lodash.
  */
 declare module 'lodash' {
-    interface LoDashStatic {
-        readonly VERSION: string;
-        runInContext(context?: object): LoDashStatic;
-    }
-    const lodash: LoDashStatic;
-    export = lodash;
+  interface LoDashStatic {
+    readonly VERSION: string;
+    runInContext(context?: object): LoDashStatic;
+  }
+  const lodash: LoDashStatic;
+  export default lodash;
 }

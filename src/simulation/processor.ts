@@ -55,7 +55,7 @@ import { processTowerIntents } from './intents/towers/intents.ts';
 import { tickTower } from './intents/towers/tick.ts';
 import type { ObjectIntentSet, RoomIntentsDoc, RoomScope, RoomUserIntents } from './scope.ts';
 import type { MapView, RoomObject } from './state.ts';
-import { isEqual, jsonClone, lookup } from './support.ts';
+import { effectList, isEqual, jsonClone, lookup } from './support.ts';
 
 const KEEPER_ID = '3';
 const INVADER_ID = '2';
@@ -457,7 +457,9 @@ export function processRoom(
     }
 
     if (object.effects) {
-      const collapseEffect = object.effects.find((e) => e.effect === C.EFFECT_COLLAPSE_TIMER);
+      const collapseEffect = effectList(object.effects).find(
+        (e) => e.effect === C.EFFECT_COLLAPSE_TIMER,
+      );
       if (collapseEffect && collapseEffect.endTime <= gameTime) {
         bulk.remove(object._id);
         Reflect.deleteProperty(roomObjects, object._id);

@@ -7,7 +7,7 @@ import * as C from '../../../constants.ts';
 import { calcResources, checkStructureAgainstController } from '../../../utils/index.ts';
 import type { IntentArgs, RoomScope } from '../../scope.ts';
 import type { ActionLog, RoomObject } from '../../state.ts';
-import { lookup, sumValues } from '../../support.ts';
+import { lookup, sumValues, effectList } from '../../support.ts';
 
 interface Commodity {
   readonly amount?: number;
@@ -41,7 +41,7 @@ export function factoryProduce(
   if (
     !!commodity.level &&
     (object.level as number) > 0 &&
-    !(object.effects ?? []).some(
+    !effectList(object.effects).some(
       (e) =>
         e.power == C.PWR_OPERATE_FACTORY && e.level == commodity.level && e.endTime >= gameTime,
     )

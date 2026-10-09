@@ -5,42 +5,53 @@
  * used under the ISC license (see THIRD_PARTY_NOTICES.md).
  */
 
-import { defineGameObjectProperties, exposeGlobal, finalizeClass } from './define.ts';
+import {
+  defineGameObjectProperties,
+  exposeGlobal,
+  gameConstructor,
+  type GameConstructor,
+} from './define.ts';
 import type { RawRoomObject } from './runtime-data.ts';
 import { RoomObject } from './room-object.ts';
 import { rawObject, scope } from './scope.ts';
 
-export class Mineral extends RoomObject {
-    declare id: string;
-    declare readonly mineralType: string | undefined;
-    declare readonly mineralAmount: number | undefined;
-    declare readonly density: number | undefined;
-    declare readonly ticksToRegeneration: number | undefined;
+class MineralImpl extends RoomObject {
+  declare id: string;
+  declare readonly mineralType: string | undefined;
+  declare readonly mineralAmount: number | undefined;
+  declare readonly density: number | undefined;
+  declare readonly ticksToRegeneration: number | undefined;
 
-    constructor(id: string) {
-        // upstream reads the data unconditionally, so a missing id throws
-        const data = rawObject(id);
-        super(data.x, data.y, data.room, data.effects);
-        this.id = id;
-    }
-
-    toString(): string {
-        return `[mineral (${String(this.mineralType)}) #${this.id}]`;
-    }
+  override toString(): string {
+    return `[mineral (${String(this.mineralType)}) #${this.id}]`;
+  }
 }
 
-finalizeClass(Mineral);
+export type Mineral = MineralImpl;
+
+/** Upstream `register.wrapFn(function(id) {…})`. */
+export const Mineral: GameConstructor<Mineral, [id?: unknown]> = gameConstructor(
+  MineralImpl,
+  function (this: Mineral, id?: unknown): void {
+    const data = rawObject(id);
+    RoomObject.call(this, data.x, data.y, data.room, data.effects);
+    // upstream stores the raw argument
+    this.id = id as string;
+  },
+  { name: '', length: 1 },
+);
 
 defineGameObjectProperties<Mineral, RawRoomObject>(Mineral.prototype, rawObject, {
-    mineralType: (o) => o.mineralType,
-    mineralAmount: (o) => o.mineralAmount,
-    density: (o) => o.density,
-    ticksToRegeneration: (o) => (o.nextRegenerationTime ? o.nextRegenerationTime - scope().runtimeData.time : undefined),
+  mineralType: (o) => o.mineralType,
+  mineralAmount: (o) => o.mineralAmount,
+  density: (o) => o.density,
+  ticksToRegeneration: (o) =>
+    o.nextRegenerationTime ? o.nextRegenerationTime - scope().runtimeData.time : undefined,
 });
 
 export function make(): void {
-    if (scope().globals.Mineral) {
-        return;
-    }
-    exposeGlobal('Mineral', Mineral);
+  if (scope().globals.Mineral) {
+    return;
+  }
+  exposeGlobal('Mineral', Mineral);
 }

@@ -4,6 +4,7 @@
  */
 
 import * as C from '../constants.ts';
+import { toPropertyKey } from './js.ts';
 import { collectionValues, isObject, shuffle, sum } from './lodash.ts';
 import type { ResourceConstant } from '../types/index.ts';
 import { getProp, ownValue, readProp } from './tables.ts';
@@ -73,13 +74,8 @@ export function calcBodyEffectiveness(
 export function calcResources(object: object): number {
   const store = readProp(object, 'store');
   if (store) {
-    // lodash 3 `_.sum`: object values, or the characters of a string; other primitives sum to 0.
-    const values: unknown[] = isObject(store)
-      ? Object.values(store)
-      : typeof store === 'string'
-        ? Array.from(store)
-        : [];
-    return sum(values);
+    // lodash 3 `_.sum(store)`: array-likes by index (string code units included), objects by own values.
+    return sum(collectionValues(store));
   }
   return sum(C.RESOURCES_ALL, (resource) => {
     const value = readProp(object, resource);
@@ -114,8 +110,8 @@ export function capacityForResource(
 export function capacityForResource(object: StoreCapacityLike, resourceType: unknown): unknown;
 export function capacityForResource(object: StoreCapacityLike, resourceType: unknown): unknown {
   const compartments = object.storeCapacityResource;
-  // Reflect.get applies ToPropertyKey to the key, exactly like `compartments[resourceType]`.
-  const dedicated: unknown = compartments && getProp(compartments, resourceType as PropertyKey);
+  // Exactly `storeCapacityResource && storeCapacityResource[resourceType]`.
+  const dedicated: unknown = compartments && getProp(compartments, toPropertyKey(resourceType));
   return (
     dedicated || Math.max(0, (object.storeCapacity || 0) - sum(collectionValues(compartments)))
   );

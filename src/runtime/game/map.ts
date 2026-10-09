@@ -1,499 +1,578 @@
 /*
  * Game.map (screeps/engine `src/game/map.js`).
  *
+ * Upstream map.js is sloppy-mode code: `this` is coerced with `sloppyThis`, and every operation on
+ * player-supplied values goes through the JS-semantics helpers so conversions, inherited property
+ * lookups and thrown errors match.
+ *
  * Portions derived from screeps/engine, Copyright (c) 2016, Artem Chivchalov <contact@screeps.com>,
  * used under the ISC license (see THIRD_PARTY_NOTICES.md).
  */
 
 import * as C from '../../constants.ts';
-import { calcRoomsDistance, getRoomNameFromXY, roomNameToXY } from '../../utils/index.ts';
+import { getRoomNameFromXY } from '../../utils/rooms.ts';
+import { jsAdd, jsBitAnd, jsConcat, jsGt, jsLt, jsMul } from '../../utils/js.ts';
+import { isObject } from '../../utils/lodash.ts';
 import { Heap, OpenClosed } from '../../utils/path-utils.ts';
-import { contains, isArray, isObject, isUndefined } from './compat.ts';
+import { getProp } from '../../utils/tables.ts';
+import { contains, isArray, isUndefined, sloppyThis } from './compat.ts';
 import { RoomPosition } from './room-position.ts';
-import { RoomTerrain } from './rooms.ts';
 import { scope } from './scope.ts';
 
 const kRouteGrid = 30;
 
-/** `value[key]` with the TypeError JS throws for `null`/`undefined` bases. */
-export function readProperty(value: unknown, key: string): unknown {
-    if (value === null || value === undefined) {
-        throw new TypeError(`Cannot read properties of ${String(value)} (reading '${key}')`);
-    }
-    return (Object(value) as Record<string, unknown>)[key];
+/** Calls `target[name](...args)` like upstream `name.<method>(…)` on an untrusted room name. */
+function callNameMethod(target: unknown, method: string, args: unknown[]): unknown {
+  const fn = getProp(target, method);
+  if (typeof fn !== 'function') {
+    throw new TypeError(`name.${method} is not a function`);
+  }
+  const result: unknown = Reflect.apply(fn, target, args);
+  return result;
 }
 
-/** The room name argument of upstream `utils.roomNameToXY`, throwing where `name.substr` would. */
-export function roomNameString(name: unknown): string {
-    if (typeof name === 'string') {
-        return name;
-    }
-    if (name === null || name === undefined) {
-        throw new TypeError(`Cannot read properties of ${String(name)} (reading 'substr')`);
-    }
-    if (name instanceof String) {
-        return name.valueOf();
-    }
-    throw new TypeError('name.substr is not a function');
+/**
+ * Upstream `utils.roomNameToXY` applied to an untrusted value: the `substr`/`charAt` methods are
+ * looked up on the value itself and `parseInt` performs its own ToString, exactly like upstream.
+ */
+export function roomNameToXYLoose(name: unknown): [number, number] {
+  // Boundary: `parseInt` applies ToString to whatever `substr` returned, like upstream.
+  let xx = parseInt(callNameMethod(name, 'substr', [1]) as string, 10);
+  let verticalPos = 2;
+  if (xx >= 100) {
+    verticalPos = 4;
+  } else if (xx >= 10) {
+    verticalPos = 3;
+  }
+  let yy = parseInt(callNameMethod(name, 'substr', [verticalPos + 1]) as string, 10);
+  const horizontalDir = callNameMethod(name, 'charAt', [0]);
+  const verticalDir = callNameMethod(name, 'charAt', [verticalPos]);
+  if (horizontalDir === 'W' || horizontalDir === 'w') {
+    xx = -xx - 1;
+  }
+  if (verticalDir === 'N' || verticalDir === 'n') {
+    yy = -yy - 1;
+  }
+  return [xx, yy];
 }
+
+/** Upstream `utils.calcRoomsDistance` on untrusted room names (`driver.getWorldSize()` passed in). */
+export function calcRoomsDistanceLoose(
+  room1: unknown,
+  room2: unknown,
+  continuous: unknown,
+  worldSize: number,
+): number {
+  const [x1, y1] = roomNameToXYLoose(room1);
+  const [x2, y2] = roomNameToXYLoose(room2);
+  let dx = Math.abs(x2 - x1);
+  let dy = Math.abs(y2 - y1);
+  if (continuous) {
+    dx = Math.min(worldSize - dx, dx);
+    dy = Math.min(worldSize - dy, dy);
+  }
+  return Math.max(dx, dy);
+}
+
+/** RegExp test with the regexp's own ToString of the argument (symbols throw like upstream). */
+function testRoomName(re: RegExp, value: unknown): boolean {
+  // Boundary: `RegExp.prototype.test` performs ToString on any value.
+  return re.test(value as string);
+}
+
+const roomNameRe = /^(W|E)\d+(N|S)\d+$/;
+const routeRoomNameRe = /(W|E)\d+(N|S)\d+$/;
 
 export interface RouteStep {
-    exit: number;
-    room: string;
+  exit: number;
+  room: string;
 }
 
 export interface RoomStatus {
-    status: 'normal' | 'closed' | 'novice' | 'respawn';
-    timestamp: number | null;
+  status: 'normal' | 'closed' | 'novice' | 'respawn';
+  timestamp: unknown;
 }
 
 export interface MapVisual {
-    circle(pos: unknown, style?: unknown): MapVisual;
-    line(pos1: unknown, pos2: unknown, style?: unknown): MapVisual;
-    rect(pos: unknown, w: unknown, h: unknown, style?: unknown): MapVisual;
-    poly(points: unknown, style?: unknown): MapVisual;
-    text(text: unknown, pos: unknown, style?: unknown): MapVisual;
-    clear(): MapVisual;
-    getSize(): number;
-    export(): string | undefined;
-    import(data: unknown): MapVisual;
+  circle(pos: unknown, style?: unknown): object;
+  line(pos1: unknown, pos2: unknown, style?: unknown): object;
+  rect(pos: unknown, w: unknown, h: unknown, style?: unknown): object;
+  poly(points: unknown, style?: unknown): object;
+  text(text: unknown, pos: unknown, style?: unknown): object;
+  clear(): object;
+  getSize(): number;
+  export(): string | undefined;
+  import(data: unknown): object;
 }
 
 export interface GameMap {
-    findRoute(fromRoom: unknown, toRoom: unknown, opts?: unknown): RouteStep[] | number;
-    findExit(this: GameMap, fromRoom: unknown, toRoom: unknown, opts?: unknown): number;
-    describeExits(roomName: unknown): Record<string, string> | null;
-    isRoomAvailable(roomName: unknown): boolean;
-    getRoomStatus(roomName: unknown): RoomStatus | undefined;
-    getTerrainAt(x: unknown, y?: unknown, roomName?: unknown): 'wall' | 'swamp' | 'plain' | undefined;
-    getRoomTerrain(roomName: unknown): RoomTerrain;
-    getRoomLinearDistance(roomName1: unknown, roomName2: unknown, continuous?: unknown): number;
-    getWorldSize(): number;
-    readonly visual: MapVisual;
+  findRoute(fromRoom: unknown, toRoom: unknown, opts?: unknown): RouteStep[] | number;
+  findExit(fromRoom: unknown, toRoom: unknown, opts?: unknown): unknown;
+  describeExits(roomName: unknown): Record<string, string> | null;
+  isRoomAvailable(roomName: unknown): boolean;
+  getRoomStatus(roomName: unknown): RoomStatus | undefined;
+  getTerrainAt(x: unknown, y?: unknown, roomName?: unknown): 'wall' | 'swamp' | 'plain' | undefined;
+  getRoomTerrain(roomName: unknown): unknown;
+  getRoomLinearDistance(roomName1: unknown, roomName2: unknown, continuous?: unknown): number;
+  getWorldSize(): number;
+  readonly visual: MapVisual;
 }
 
-// Route search structures, reused across calls like upstream.
-let heap: Heap | undefined;
-let openClosed: OpenClosed | undefined;
-let parents: Uint16Array | undefined;
-let originX = 0;
-let originY = 0;
-let toX = 0;
-let toY = 0;
+function assertRoomPosition(pos: unknown, message: string): asserts pos is RoomPosition {
+  if (!(pos instanceof RoomPosition)) {
+    throw new Error(message);
+  }
+}
 
-function xyToIndex(xx: number, yy: number): number | undefined {
-    const ox = originX - xx;
-    const oy = originY - yy;
-    if (ox < 0 || ox >= kRouteGrid * 2 || oy < 0 || oy >= kRouteGrid * 2) {
-        return undefined;
+/** `globals.console.addVisual("map", …)`, reading the console at call time like upstream. */
+function addMapVisual(data: unknown): void {
+  scope().globals.console.addVisual('map', data);
+}
+
+function makeVisual(): MapVisual {
+  return Object.defineProperties(
+    {},
+    {
+      circle: {
+        value: function (this: unknown, pos: unknown, style?: unknown): object {
+          assertRoomPosition(pos, 'Invalid pos, RoomPosition expected');
+          addMapVisual({
+            t: 'c',
+            x: pos.x,
+            y: pos.y,
+            n: pos.roomName,
+            s: style || {},
+          });
+          return sloppyThis(this);
+        },
+      },
+      line: {
+        value: function (this: unknown, pos1: unknown, pos2: unknown, style?: unknown): object {
+          assertRoomPosition(pos1, 'Invalid pos1, RoomPosition expected');
+          assertRoomPosition(pos2, 'Invalid pos2, RoomPosition expected');
+          addMapVisual({
+            t: 'l',
+            x1: pos1.x,
+            y1: pos1.y,
+            n1: pos1.roomName,
+            x2: pos2.x,
+            y2: pos2.y,
+            n2: pos2.roomName,
+            s: style || {},
+          });
+          return sloppyThis(this);
+        },
+      },
+      rect: {
+        value: function (
+          this: unknown,
+          pos: unknown,
+          w: unknown,
+          h: unknown,
+          style?: unknown,
+        ): object {
+          assertRoomPosition(pos, 'Invalid pos, RoomPosition expected');
+          addMapVisual({
+            t: 'r',
+            x: pos.x,
+            y: pos.y,
+            n: pos.roomName,
+            w,
+            h,
+            s: style || {},
+          });
+          return sloppyThis(this);
+        },
+      },
+      poly: {
+        value: function (this: unknown, points: unknown, style?: unknown): object {
+          if (isArray(points) && lodashSomeTruthy(points)) {
+            const mapped = points.map((i) => {
+              const p = getProp(i, 'pos') || i;
+              return { x: getProp(p, 'x'), y: getProp(p, 'y'), n: getProp(p, 'roomName') };
+            });
+            addMapVisual({
+              t: 'p',
+              points: mapped,
+              s: style || {},
+            });
+          }
+          return sloppyThis(this);
+        },
+      },
+      text: {
+        value: function (this: unknown, text: unknown, pos: unknown, style?: unknown): object {
+          assertRoomPosition(pos, 'Invalid pos , RoomPosition expected');
+          addMapVisual({
+            t: 't',
+            text,
+            x: pos.x,
+            y: pos.y,
+            n: pos.roomName,
+            s: style || {},
+          });
+          return sloppyThis(this);
+        },
+      },
+      clear: {
+        value: function (this: unknown): object {
+          scope().globals.console.clearVisual('map');
+          return sloppyThis(this);
+        },
+      },
+      getSize: {
+        value: function (): number {
+          return scope().globals.console.getVisualSize('map');
+        },
+      },
+      export: {
+        value: function (): string | undefined {
+          return scope().globals.console.getVisual('map');
+        },
+      },
+      import: {
+        value: function (this: unknown, data: unknown): object {
+          addMapVisual(jsConcat(data));
+          return sloppyThis(this);
+        },
+      },
+    },
+  ) as MapVisual;
+}
+
+/** lodash 3 `_.some(array)` without predicate: index loop over every slot (holes read as `undefined`). */
+function lodashSomeTruthy(array: unknown[]): boolean {
+  const length = array.length;
+  for (let index = 0; index < length; index++) {
+    if (array[index]) {
+      return true;
     }
-    return ox * kRouteGrid * 2 + oy;
+  }
+  return false;
 }
 
-function indexToXY(index: number): [number, number] {
-    return [originX - Math.floor(index / (kRouteGrid * 2)), originY - (index % (kRouteGrid * 2))];
-}
+export function makeMap(): GameMap {
+  const { runtimeData, register } = scope();
 
-function heuristic(xx: number, yy: number): number {
-    return Math.abs(xx - toX) + Math.abs(yy - toY);
-}
+  // Route search state is per map object (upstream `makeMap` closure variables).
+  let heap: Heap | undefined;
+  let openClosed: OpenClosed | undefined;
+  let parents: Uint16Array | undefined;
+  let originX = 0;
+  let originY = 0;
+  let toX = 0;
+  let toY = 0;
+  let visual: MapVisual | undefined;
 
-function describeExits(roomName: unknown): Record<string, string> | null {
-    if (!/^(W|E)\d+(N|S)\d+$/.test(String(roomName))) {
-        return null;
+  const accessibleRooms: unknown = JSON.parse(runtimeData.accessibleRooms);
+
+  function describeExits(roomName: unknown): Record<string, string> | null {
+    if (!testRoomName(roomNameRe, roomName)) {
+      return null;
     }
-    const [x, y] = roomNameToXY(roomNameString(roomName));
-    const gridItem = scope().runtimeData.mapGrid.gridData[`${String(x)},${String(y)}`];
+    const [x, y] = roomNameToXYLoose(roomName);
+    const gridItem = getProp(runtimeData.mapGrid.gridData, `${String(x)},${String(y)}`);
     if (!gridItem) {
-        return null;
+      return null;
     }
 
     const exits: Record<string, string> = {};
 
-    if (gridItem.t) {
-        exits[C.TOP] = getRoomNameFromXY(x, y - 1);
+    if (getProp(gridItem, 't')) {
+      exits[C.TOP] = getRoomNameFromXY(x, y - 1);
     }
-    if (gridItem.b) {
-        exits[C.BOTTOM] = getRoomNameFromXY(x, y + 1);
+    if (getProp(gridItem, 'b')) {
+      exits[C.BOTTOM] = getRoomNameFromXY(x, y + 1);
     }
-    if (gridItem.l) {
-        exits[C.LEFT] = getRoomNameFromXY(x - 1, y);
+    if (getProp(gridItem, 'l')) {
+      exits[C.LEFT] = getRoomNameFromXY(x - 1, y);
     }
-    if (gridItem.r) {
-        exits[C.RIGHT] = getRoomNameFromXY(x + 1, y);
+    if (getProp(gridItem, 'r')) {
+      exits[C.RIGHT] = getRoomNameFromXY(x + 1, y);
     }
 
     return exits;
-}
+  }
 
-function terrainByte(terrain: Uint8Array, key: number | string): number | undefined {
-    if (typeof key === 'number') {
-        return terrain[key];
+  function xyToIndex(xx: number, yy: number): number | undefined {
+    const ox = originX - xx;
+    const oy = originY - yy;
+    if (ox < 0 || ox >= kRouteGrid * 2 || oy < 0 || oy >= kRouteGrid * 2) {
+      return undefined;
     }
-    // Typed arrays only resolve canonical numeric string keys to elements.
-    return String(Number(key)) === key ? terrain[Number(key)] : undefined;
-}
+    return ox * kRouteGrid * 2 + oy;
+  }
 
-function assertRoomPosition(pos: unknown, name: string): asserts pos is RoomPosition {
-    if (!(pos instanceof RoomPosition)) {
-        throw new Error(`Invalid ${name}, RoomPosition expected`);
-    }
-}
+  function indexToXY(index: number): [number, number] {
+    return [originX - Math.floor(index / (kRouteGrid * 2)), originY - (index % (kRouteGrid * 2))];
+  }
 
-function makeVisual(): MapVisual {
-    const { console } = scope().globals;
-    return Object.defineProperties(
-        {},
-        {
-            circle: {
-                value: function (this: MapVisual, pos: unknown, style?: unknown): MapVisual {
-                    assertRoomPosition(pos, 'pos');
-                    console.addVisual('map', {
-                        t: 'c',
-                        x: pos.x,
-                        y: pos.y,
-                        n: pos.roomName,
-                        s: style || {},
-                    });
-                    return this;
-                },
-            },
-            line: {
-                value: function (this: MapVisual, pos1: unknown, pos2: unknown, style?: unknown): MapVisual {
-                    assertRoomPosition(pos1, 'pos1');
-                    assertRoomPosition(pos2, 'pos2');
-                    console.addVisual('map', {
-                        t: 'l',
-                        x1: pos1.x,
-                        y1: pos1.y,
-                        n1: pos1.roomName,
-                        x2: pos2.x,
-                        y2: pos2.y,
-                        n2: pos2.roomName,
-                        s: style || {},
-                    });
-                    return this;
-                },
-            },
-            rect: {
-                value: function (this: MapVisual, pos: unknown, w: unknown, h: unknown, style?: unknown): MapVisual {
-                    assertRoomPosition(pos, 'pos');
-                    console.addVisual('map', {
-                        t: 'r',
-                        x: pos.x,
-                        y: pos.y,
-                        n: pos.roomName,
-                        w,
-                        h,
-                        s: style || {},
-                    });
-                    return this;
-                },
-            },
-            poly: {
-                value: function (this: MapVisual, points: unknown, style?: unknown): MapVisual {
-                    if (isArray(points) && points.some(Boolean)) {
-                        const mapped = points.map((i) => {
-                            const p = readProperty(i, 'pos') || i;
-                            return { x: readProperty(p, 'x'), y: readProperty(p, 'y'), n: readProperty(p, 'roomName') };
-                        });
-                        console.addVisual('map', {
-                            t: 'p',
-                            points: mapped,
-                            s: style || {},
-                        });
-                    }
-                    return this;
-                },
-            },
-            text: {
-                value: function (this: MapVisual, text: unknown, pos: unknown, style?: unknown): MapVisual {
-                    assertRoomPosition(pos, 'pos ');
-                    console.addVisual('map', {
-                        t: 't',
-                        text,
-                        x: pos.x,
-                        y: pos.y,
-                        n: pos.roomName,
-                        s: style || {},
-                    });
-                    return this;
-                },
-            },
-            clear: {
-                value: function (this: MapVisual): MapVisual {
-                    console.clearVisual('map');
-                    return this;
-                },
-            },
-            getSize: {
-                value: function (): number {
-                    return console.getVisualSize('map');
-                },
-            },
-            export: {
-                value: function (): string | undefined {
-                    return console.getVisual('map');
-                },
-            },
-            import: {
-                value: function (this: MapVisual, data: unknown): MapVisual {
-                    console.addVisual('map', String(data));
-                    return this;
-                },
-            },
-        },
-    ) as MapVisual;
-}
+  function heuristic(xx: number, yy: number): number {
+    return Math.abs(xx - toX) + Math.abs(yy - toY);
+  }
 
-export function makeMap(): GameMap {
-    const { runtimeData, register } = scope();
-    const accessibleRooms: unknown = JSON.parse(runtimeData.accessibleRooms);
-    let visual: MapVisual | undefined;
+  const map = {
+    findRoute(fromRoomArg: unknown, toRoomArg: unknown, opts?: unknown): RouteStep[] | number {
+      let fromRoom = fromRoomArg;
+      let toRoom = toRoomArg;
+      if (isObject(fromRoom)) {
+        fromRoom = getProp(fromRoom, 'name');
+      }
+      if (isObject(toRoom)) {
+        toRoom = getProp(toRoom, 'name');
+      }
+      // Boundary: upstream compares with loose equality.
+      if (fromRoom == toRoom) {
+        return [];
+      }
 
-    const map = {
-        findRoute(fromRoom: unknown, toRoom: unknown, opts?: unknown): RouteStep[] | number {
-            let from = fromRoom;
-            let to = toRoom;
-            if (isObject(from)) {
-                from = readProperty(from, 'name');
-            }
-            if (isObject(to)) {
-                to = readProperty(to, 'name');
-            }
-            if (from == to) {
-                return [];
-            }
+      if (!testRoomName(routeRoomNameRe, fromRoom) || !testRoomName(routeRoomNameRe, toRoom)) {
+        return C.ERR_NO_PATH;
+      }
 
-            if (!/(W|E)\d+(N|S)\d+$/.test(String(from)) || !/(W|E)\d+(N|S)\d+$/.test(String(to))) {
-                return C.ERR_NO_PATH;
-            }
+      const [fromX, fromY] = roomNameToXYLoose(fromRoom);
+      [toX, toY] = roomNameToXYLoose(toRoom);
 
-            const [fromX, fromY] = roomNameToXY(roomNameString(from));
-            [toX, toY] = roomNameToXY(roomNameString(to));
+      if (fromX == toX && fromY == toY) {
+        return [];
+      }
 
-            if (fromX == toX && fromY == toY) {
-                return [];
-            }
+      originX = fromX + kRouteGrid;
+      originY = fromY + kRouteGrid;
 
-            originX = fromX + kRouteGrid;
-            originY = fromY + kRouteGrid;
+      // Init path finding structures
+      if (heap && openClosed) {
+        heap.clear();
+        openClosed.clear();
+      } else {
+        heap = new Heap(Math.pow(kRouteGrid * 2, 2), Float64Array);
+        openClosed = new OpenClosed(Math.pow(kRouteGrid * 2, 2));
+      }
+      parents ??= new Uint16Array(Math.pow(kRouteGrid * 2, 2));
+      // xyToIndex(fromX, fromY): the origin is always the grid center.
+      const fromIndex = kRouteGrid * kRouteGrid * 2 + kRouteGrid;
+      heap.push(fromIndex, heuristic(fromX, fromY));
+      const routeCallback: unknown =
+        (opts && getProp(opts, 'routeCallback')) ||
+        function () {
+          return 1;
+        };
 
-            // Init path finding structures
-            if (heap && openClosed) {
-                heap.clear();
-                openClosed.clear();
+      // Astar
+      while (heap.size()) {
+        // Pull node off heap
+        let index = heap.min();
+        const fcost = heap.minPriority();
+
+        // Close this node
+        heap.pop();
+        openClosed.close(index);
+
+        // Calculate costs
+        const [xx, yy] = indexToXY(index);
+        const hcost = heuristic(xx, yy);
+        const gcost = fcost - hcost;
+
+        // Reached destination?
+        if (hcost === 0) {
+          const route: RouteStep[] = [];
+          while (index !== fromIndex) {
+            const [cx, cy] = indexToXY(index);
+            index = parents[index] ?? 0;
+            const [nx, ny] = indexToXY(index);
+            let dir: number;
+            if (nx < cx) {
+              dir = C.FIND_EXIT_RIGHT;
+            } else if (nx > cx) {
+              dir = C.FIND_EXIT_LEFT;
+            } else if (ny < cy) {
+              dir = C.FIND_EXIT_BOTTOM;
             } else {
-                heap = new Heap(Math.pow(kRouteGrid * 2, 2), Float64Array);
-                openClosed = new OpenClosed(Math.pow(kRouteGrid * 2, 2));
+              dir = C.FIND_EXIT_TOP;
             }
-            parents ??= new Uint16Array(Math.pow(kRouteGrid * 2, 2));
-            // xyToIndex(fromX, fromY): the origin is always the grid center.
-            const fromIndex = kRouteGrid * kRouteGrid * 2 + kRouteGrid;
-            heap.push(fromIndex, heuristic(fromX, fromY));
-            const routeCallback: unknown = (opts && readProperty(opts, 'routeCallback')) || (() => 1);
+            route.push({
+              exit: dir,
+              room: getRoomNameFromXY(cx, cy),
+            });
+          }
+          route.reverse();
+          return route;
+        }
 
-            // Astar
-            while (heap.size()) {
-                // Pull node off heap
-                let index = heap.min();
-                const fcost = heap.minPriority();
+        // Add neighbors
+        const fromRoomName = getRoomNameFromXY(xx, yy);
+        const exits = describeExits(fromRoomName);
+        // for-in like upstream: inherited enumerable keys are visited too (`null` iterates nothing).
+        for (const dir in exits ?? (Object.create(null) as object)) {
+          // Calculate costs and check if this node was already visited
+          const roomName = getProp(exits, dir);
+          // Upstream builds the (unused) `graphKey` string, converting `roomName`.
+          jsAdd(`${fromRoomName}:`, roomName);
+          const [nxx, nyy] = roomNameToXYLoose(roomName);
+          const neighborIndex = xyToIndex(nxx, nyy);
+          if (neighborIndex === undefined || openClosed.isClosed(neighborIndex)) {
+            continue;
+          }
+          if (typeof routeCallback !== 'function') {
+            throw new TypeError('routeCallback is not a function');
+          }
+          const cost =
+            Number(Reflect.apply(routeCallback, undefined, [roomName, fromRoomName])) || 1;
+          if (cost === Infinity) {
+            continue;
+          }
 
-                // Close this node
-                heap.pop();
-                openClosed.close(index);
+          const neighborFcost = gcost + heuristic(nxx, nyy) + cost;
 
-                // Calculate costs
-                const [xx, yy] = indexToXY(index);
-                const hcost = heuristic(xx, yy);
-                const gcost = fcost - hcost;
-
-                // Reached destination?
-                if (hcost === 0) {
-                    const route: RouteStep[] = [];
-                    while (index !== fromIndex) {
-                        const [cx, cy] = indexToXY(index);
-                        index = parents[index] ?? 0;
-                        const [nx, ny] = indexToXY(index);
-                        let dir: number;
-                        if (nx < cx) {
-                            dir = C.FIND_EXIT_RIGHT;
-                        } else if (nx > cx) {
-                            dir = C.FIND_EXIT_LEFT;
-                        } else if (ny < cy) {
-                            dir = C.FIND_EXIT_BOTTOM;
-                        } else {
-                            dir = C.FIND_EXIT_TOP;
-                        }
-                        route.push({
-                            exit: dir,
-                            room: getRoomNameFromXY(cx, cy),
-                        });
-                    }
-                    route.reverse();
-                    return route;
-                }
-
-                // Add neighbors
-                const fromRoomName = getRoomNameFromXY(xx, yy);
-                const exits = describeExits(fromRoomName);
-                for (const dir in exits) {
-                    // Calculate costs and check if this node was already visited
-                    const roomName = exits[dir];
-                    if (roomName === undefined) {
-                        continue;
-                    }
-                    const [nxx, nyy] = roomNameToXY(roomName);
-                    const neighborIndex = xyToIndex(nxx, nyy);
-                    if (neighborIndex === undefined || openClosed.isClosed(neighborIndex)) {
-                        continue;
-                    }
-                    if (typeof routeCallback !== 'function') {
-                        throw new TypeError('routeCallback is not a function');
-                    }
-                    // Boundary: player callback invoked like upstream `routeCallback(roomName, fromRoomName)`.
-                    const callback = routeCallback as (roomName: string, fromRoomName: string) => unknown;
-                    const cost = Number(callback(roomName, fromRoomName)) || 1;
-                    if (cost === Infinity) {
-                        continue;
-                    }
-
-                    const neighborFcost = gcost + heuristic(nxx, nyy) + cost;
-
-                    // Add to or update heap
-                    if (openClosed.isOpen(neighborIndex)) {
-                        if (heap.priority(neighborIndex) > neighborFcost) {
-                            heap.update(neighborIndex, neighborFcost);
-                            parents[neighborIndex] = index;
-                        }
-                    } else {
-                        heap.push(neighborIndex, neighborFcost);
-                        openClosed.open(neighborIndex);
-                        parents[neighborIndex] = index;
-                    }
-                }
+          // Add to or update heap
+          if (openClosed.isOpen(neighborIndex)) {
+            if (heap.priority(neighborIndex) > neighborFcost) {
+              heap.update(neighborIndex, neighborFcost);
+              parents[neighborIndex] = index;
             }
+          } else {
+            heap.push(neighborIndex, neighborFcost);
+            openClosed.open(neighborIndex);
+            parents[neighborIndex] = index;
+          }
+        }
+      }
 
-            return C.ERR_NO_PATH;
-        },
+      return C.ERR_NO_PATH;
+    },
 
-        findExit(this: GameMap, fromRoom: unknown, toRoom: unknown, opts?: unknown): number {
-            const route = this.findRoute(fromRoom, toRoom, opts);
-            if (!isArray(route)) {
-                return route;
-            }
-            const first = route[0];
-            if (!first) {
-                return C.ERR_INVALID_ARGS;
-            }
-            return first.exit;
-        },
+    findExit(this: unknown, fromRoom: unknown, toRoom: unknown, opts?: unknown): unknown {
+      const self = sloppyThis(this);
+      const findRoute = getProp(self, 'findRoute');
+      if (typeof findRoute !== 'function') {
+        throw new TypeError('this.findRoute is not a function');
+      }
+      const route: unknown = Reflect.apply(findRoute, self, [fromRoom, toRoom, opts]);
+      if (!isArray(route)) {
+        return route;
+      }
+      if (!route.length) {
+        return C.ERR_INVALID_ARGS;
+      }
+      return getProp(route[0], 'exit');
+    },
 
-        describeExits,
+    describeExits,
 
-        isRoomAvailable(roomName: unknown): boolean {
-            register.deprecated(
-                'Method `Game.map.isRoomAvailable` is deprecated and will be removed. Please use `Game.map.getRoomStatus` instead.',
-            );
-            if (!/^(W|E)\d+(N|S)\d+$/.test(String(roomName))) {
-                return false;
-            }
-            return contains(accessibleRooms, roomName);
-        },
+    isRoomAvailable(roomName: unknown): boolean {
+      register.deprecated(
+        'Method `Game.map.isRoomAvailable` is deprecated and will be removed. Please use `Game.map.getRoomStatus` instead.',
+      );
+      if (!testRoomName(roomNameRe, roomName)) {
+        return false;
+      }
+      return contains(accessibleRooms, roomName);
+    },
 
-        getRoomStatus(roomName: unknown): RoomStatus | undefined {
-            if (!/^(W|E)\d+(N|S)\d+$/.test(String(roomName))) {
-                return undefined;
-            }
+    getRoomStatus(roomName: unknown): RoomStatus | undefined {
+      if (!testRoomName(roomNameRe, roomName)) {
+        return undefined;
+      }
 
-            // Upstream guards against missing status data; kept for runtimes delivering none.
-            const statusData = runtimeData.roomStatusData as typeof runtimeData.roomStatusData | undefined;
-            if (!statusData) {
-                throw new Error('No runtime status data');
-            }
+      const statusData: unknown = runtimeData.roomStatusData;
+      if (!statusData) {
+        throw new Error('No runtime status data');
+      }
 
-            const key = String(roomName);
-            const closed = statusData.closed[key];
-            if (!isUndefined(closed)) {
-                return { status: 'closed', timestamp: closed };
-            }
-            const novice = statusData.novice[key];
-            if (!isUndefined(novice)) {
-                return { status: 'novice', timestamp: novice };
-            }
-            const respawn = statusData.respawn[key];
-            if (!isUndefined(respawn)) {
-                return { status: 'respawn', timestamp: respawn };
-            }
+      // Boundary: property keys are converted by the lookup itself, once per access like upstream.
+      const key = roomName as PropertyKey;
+      if (!isUndefined(getProp(getProp(statusData, 'closed'), key))) {
+        return { status: 'closed', timestamp: getProp(getProp(statusData, 'closed'), key) };
+      }
+      if (!isUndefined(getProp(getProp(statusData, 'novice'), key))) {
+        return { status: 'novice', timestamp: getProp(getProp(statusData, 'novice'), key) };
+      }
+      if (!isUndefined(getProp(getProp(statusData, 'respawn'), key))) {
+        return { status: 'respawn', timestamp: getProp(getProp(statusData, 'respawn'), key) };
+      }
 
-            if (contains(accessibleRooms, roomName)) {
-                return { status: 'normal', timestamp: null };
-            }
+      if (contains(accessibleRooms, roomName)) {
+        return { status: 'normal', timestamp: null };
+      }
 
-            return { status: 'closed', timestamp: null };
-        },
+      return { status: 'closed', timestamp: null };
+    },
 
-        getTerrainAt(xArg: unknown, yArg?: unknown, roomNameArg?: unknown): 'wall' | 'swamp' | 'plain' | undefined {
-            register.deprecated(
-                'Method `Game.map.getTerrainAt` is deprecated and will be removed. Please use a faster method `Game.map.getRoomTerrain` instead.',
-            );
-            let x = xArg;
-            let y = yArg;
-            let roomName = roomNameArg;
-            if (isObject(x)) {
-                y = readProperty(x, 'y');
-                roomName = readProperty(x, 'roomName');
-                x = readProperty(x, 'x');
-            }
+    getTerrainAt(
+      xArg: unknown,
+      yArg?: unknown,
+      roomNameArg?: unknown,
+    ): 'wall' | 'swamp' | 'plain' | undefined {
+      register.deprecated(
+        'Method `Game.map.getTerrainAt` is deprecated and will be removed. Please use a faster method `Game.map.getRoomTerrain` instead.',
+      );
+      let x = xArg;
+      let y = yArg;
+      let roomName = roomNameArg;
+      if (isObject(x)) {
+        y = getProp(x, 'y');
+        roomName = getProp(x, 'roomName');
+        x = getProp(x, 'x');
+      }
 
-            // check if coordinates are out of bounds
-            const nx = Number(x);
-            const ny = Number(y);
-            if (nx < 0 || nx > 49 || ny < 0 || ny > 49) {
-                return undefined;
-            }
+      // check if coordinates are out of bounds
+      if (jsLt(x, 0) || jsGt(x, 49) || jsLt(y, 0) || jsGt(y, 49)) {
+        return undefined;
+      }
 
-            // Upstream guards against missing terrain data; kept for runtimes delivering none.
-            const staticTerrainData = runtimeData.staticTerrainData as typeof runtimeData.staticTerrainData | undefined;
-            const roomTerrain = staticTerrainData?.[String(roomName)];
-            if (!roomTerrain) {
-                return undefined;
-            }
-            // `y*50+x`: a string `x` concatenates like JS `+`.
-            const index = typeof x === 'string' ? String(ny * 50) + x : ny * 50 + nx;
-            const terrain = terrainByte(roomTerrain, index) ?? 0;
-            if (terrain & C.TERRAIN_MASK_WALL) {
-                return 'wall';
-            }
-            if (terrain & C.TERRAIN_MASK_SWAMP) {
-                return 'swamp';
-            }
-            return 'plain';
-        },
+      const staticTerrainData: unknown = runtimeData.staticTerrainData;
+      // Boundary: property keys are converted by the lookup itself, once per access like upstream.
+      const roomKey = roomName as PropertyKey;
+      if (!staticTerrainData || !getProp(staticTerrainData, roomKey)) {
+        return undefined;
+      }
+      const terrain = getProp(
+        getProp(staticTerrainData, roomKey),
+        jsAdd(jsMul(y, 50), x) as PropertyKey,
+      );
+      if (jsBitAnd(terrain, C.TERRAIN_MASK_WALL)) {
+        return 'wall';
+      }
+      if (jsBitAnd(terrain, C.TERRAIN_MASK_SWAMP)) {
+        return 'swamp';
+      }
+      return 'plain';
+    },
 
-        getRoomTerrain(roomName: unknown): RoomTerrain {
-            return new RoomTerrain(roomName);
-        },
+    getRoomTerrain(roomName: unknown): unknown {
+      const Terrain = getProp(getProp(scope().globals, 'Room'), 'Terrain');
+      if (typeof Terrain !== 'function') {
+        throw new TypeError('globals.Room.Terrain is not a constructor');
+      }
+      // Probe constructibility without invoking it, so non-constructors throw upstream's message.
+      try {
+        Reflect.construct(Object, [], Terrain);
+      } catch {
+        throw new TypeError('globals.Room.Terrain is not a constructor');
+      }
+      const terrain: unknown = Reflect.construct(Terrain, [roomName]);
+      return terrain;
+    },
 
-        getRoomLinearDistance(roomName1: unknown, roomName2: unknown, continuous?: unknown): number {
-            return calcRoomsDistance(roomNameString(roomName1), roomNameString(roomName2), !!continuous, runtimeData.worldSize);
-        },
+    getRoomLinearDistance(roomName1: unknown, roomName2: unknown, continuous?: unknown): number {
+      return calcRoomsDistanceLoose(roomName1, roomName2, continuous, runtimeData.worldSize);
+    },
 
-        getWorldSize(): number {
-            return runtimeData.worldSize;
-        },
-    };
+    getWorldSize(): number {
+      return runtimeData.worldSize;
+    },
+  };
 
-    Object.defineProperties(map, {
-        visual: {
-            enumerable: true,
-            get(): MapVisual {
-                visual ??= makeVisual();
-                return visual;
-            },
-        },
-    });
+  Object.defineProperties(map, {
+    visual: {
+      enumerable: true,
+      get(): MapVisual {
+        visual ??= makeVisual();
+        return visual;
+      },
+    },
+  });
 
-    // `visual` was attached above as an enumerable, non-configurable accessor.
-    return map as typeof map & Pick<GameMap, 'visual'>;
+  // `visual` was attached above as an enumerable, non-configurable accessor.
+  return map as typeof map & Pick<GameMap, 'visual'>;
 }

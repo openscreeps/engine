@@ -7,7 +7,9 @@
  * used under the ISC license (see THIRD_PARTY_NOTICES.md).
  */
 
-import { isPlainObject, isString } from './compat.ts';
+import { jsConcat, jsString } from '../../utils/js.ts';
+import { isString } from '../../utils/lodash.ts';
+import { isPlainObject } from './compat.ts';
 import type { IntentRecorder } from './intents.ts';
 import type { RawRoomObject, SandboxRuntimeData } from './runtime-data.ts';
 import type { EventLogEntry } from '../../simulation/state.ts';
@@ -33,89 +35,101 @@ import type { GameObject, RawMemory, RequireFunction } from './game.ts';
 
 /** Object registries shared by the global register and every per-room register. */
 export interface ObjectRegistries {
-    creeps: Record<string, Creep>;
-    structures: Record<string, Structure>;
-    ownedStructures: Record<string, OwnedStructure>;
-    spawns: Record<string, StructureSpawn>;
-    sources: Record<string, Source>;
-    energy: Record<string, Resource>;
-    flags: Record<string, Flag>;
-    constructionSites: Record<string, ConstructionSite>;
-    minerals: Record<string, Mineral>;
-    deposits: Record<string, Deposit>;
-    tombstones: Record<string, Tombstone>;
-    nukes: Record<string, Nuke>;
-    powerCreeps: Record<string, PowerCreep>;
-    ruins: Record<string, Ruin>;
-    customObjects: Record<string, RoomObject>;
+  creeps: Record<string, Creep>;
+  structures: Record<string, Structure>;
+  ownedStructures: Record<string, OwnedStructure>;
+  spawns: Record<string, StructureSpawn>;
+  sources: Record<string, Source>;
+  energy: Record<string, Resource>;
+  flags: Record<string, Flag>;
+  constructionSites: Record<string, ConstructionSite>;
+  minerals: Record<string, Mineral>;
+  deposits: Record<string, Deposit>;
+  tombstones: Record<string, Tombstone>;
+  nukes: Record<string, Nuke>;
+  powerCreeps: Record<string, PowerCreep>;
+  ruins: Record<string, Ruin>;
+  customObjects: Record<string, RoomObject>;
 }
 
 export type RegistryKey = keyof ObjectRegistries;
 
 /** Objects stored at `x * 50 + y` (sparse; `undefined` where nothing is registered). */
-export type SpatialRegistries = { [K in RegistryKey]: Array<Array<ObjectRegistries[K][string]> | undefined> };
+export type SpatialRegistries = {
+  [K in RegistryKey]: Array<Array<ObjectRegistries[K][string]> | undefined>;
+};
 
 export interface RoomRegister extends ObjectRegistries {
-    spatial: SpatialRegistries;
+  spatial: SpatialRegistries;
+  /** Custom object registries keyed by their `lookConstant` (upstream `reg[lookConstant]`). */
+  custom: Record<string, Record<string, RoomObject>>;
+  /** Spatial custom registries keyed by `lookConstant` (upstream `reg.spatial[lookConstant]`). */
+  customSpatial: Record<string, Array<RoomObject[] | undefined>>;
 }
 
 export const REGISTRY_KEYS: readonly RegistryKey[] = [
-    'creeps',
-    'structures',
-    'ownedStructures',
-    'spawns',
-    'sources',
-    'energy',
-    'flags',
-    'constructionSites',
-    'minerals',
-    'deposits',
-    'tombstones',
-    'nukes',
-    'powerCreeps',
-    'ruins',
-    'customObjects',
+  'creeps',
+  'structures',
+  'ownedStructures',
+  'spawns',
+  'sources',
+  'energy',
+  'flags',
+  'constructionSites',
+  'minerals',
+  'deposits',
+  'tombstones',
+  'nukes',
+  'powerCreeps',
+  'ruins',
+  'customObjects',
 ];
 
 export function createObjectRegistries(): ObjectRegistries {
-    return {
-        creeps: {},
-        structures: {},
-        ownedStructures: {},
-        spawns: {},
-        sources: {},
-        energy: {},
-        flags: {},
-        constructionSites: {},
-        minerals: {},
-        deposits: {},
-        tombstones: {},
-        nukes: {},
-        powerCreeps: {},
-        ruins: {},
-        customObjects: {},
-    };
+  return {
+    creeps: {},
+    structures: {},
+    ownedStructures: {},
+    spawns: {},
+    sources: {},
+    energy: {},
+    flags: {},
+    constructionSites: {},
+    minerals: {},
+    deposits: {},
+    tombstones: {},
+    nukes: {},
+    powerCreeps: {},
+    ruins: {},
+    customObjects: {},
+  };
 }
 
-export function createRoomRegister(): RoomRegister {
-    const spatial: SpatialRegistries = {
-        creeps: new Array<Creep[] | undefined>(2500),
-        structures: new Array<Structure[] | undefined>(2500),
-        ownedStructures: new Array<OwnedStructure[] | undefined>(2500),
-        spawns: new Array<StructureSpawn[] | undefined>(2500),
-        sources: new Array<Source[] | undefined>(2500),
-        energy: new Array<Resource[] | undefined>(2500),
-        flags: new Array<Flag[] | undefined>(2500),
-        constructionSites: new Array<ConstructionSite[] | undefined>(2500),
-        minerals: new Array<Mineral[] | undefined>(2500),
-        deposits: new Array<Deposit[] | undefined>(2500),
-        tombstones: new Array<Tombstone[] | undefined>(2500),
-        nukes: new Array<Nuke[] | undefined>(2500),
-        powerCreeps: new Array<PowerCreep[] | undefined>(2500),
-        ruins: new Array<Ruin[] | undefined>(2500),
-        customObjects: new Array<RoomObject[] | undefined>(2500),
-    };
-    return { ...createObjectRegistries(), spatial };
+export function createRoomRegister(lookConstants: readonly string[]): RoomRegister {
+  const spatial: SpatialRegistries = {
+    creeps: new Array<Creep[] | undefined>(2500),
+    structures: new Array<Structure[] | undefined>(2500),
+    ownedStructures: new Array<OwnedStructure[] | undefined>(2500),
+    spawns: new Array<StructureSpawn[] | undefined>(2500),
+    sources: new Array<Source[] | undefined>(2500),
+    energy: new Array<Resource[] | undefined>(2500),
+    flags: new Array<Flag[] | undefined>(2500),
+    constructionSites: new Array<ConstructionSite[] | undefined>(2500),
+    minerals: new Array<Mineral[] | undefined>(2500),
+    deposits: new Array<Deposit[] | undefined>(2500),
+    tombstones: new Array<Tombstone[] | undefined>(2500),
+    nukes: new Array<Nuke[] | undefined>(2500),
+    powerCreeps: new Array<PowerCreep[] | undefined>(2500),
+    ruins: new Array<Ruin[] | undefined>(2500),
+    customObjects: new Array<RoomObject[] | undefined>(2500),
+  };
+  const custom: Record<string, Record<string, RoomObject>> = {};
+  const customSpatial: Record<string, Array<RoomObject[] | undefined>> = {};
+  for (const lookConstant of lookConstants) {
+    custom[lookConstant] = {};
+    customSpatial[lookConstant] = new Array<RoomObject[] | undefined>(2500);
+  }
+  return { ...createObjectRegistries(), spatial, custom, customSpatial };
 }
 
 /**
@@ -123,80 +137,82 @@ export function createRoomRegister(): RoomRegister {
  * `map` and `market` become available once `Game` construction reaches them.
  */
 export class Register implements ObjectRegistries {
-    _useNewPathFinder = true;
-    readonly _objects: Record<string, RoomObject> = {};
-    readonly byRoom: Record<string, RoomRegister> = {};
-    /** Find cache: FIND_* constant → room name → objects (exit positions for FIND_EXIT_*). */
-    readonly findCache: Record<number, Record<string, Array<RoomObject | RoomPosition>>> = {};
-    readonly rooms: Record<string, Room> = {};
-    readonly roomEventLogCache: Record<string, EventLogEntry[]> = {};
-    /** Non-temporary raw objects per room keyed by id. */
-    readonly objectsByRoom: Record<string, Record<string, RawRoomObject>> = {};
-    readonly objectsByRoomKeys: Record<string, string[]> = {};
+  _useNewPathFinder = true;
+  readonly _objects: Record<string, RoomObject> = {};
+  readonly byRoom: Record<string, RoomRegister> = {};
+  /** Find cache: FIND_* constant → room name → objects (exit positions for FIND_EXIT_*). */
+  readonly findCache: Record<number, Record<string, Array<RoomObject | RoomPosition>>> = {};
+  readonly rooms: Record<string, Room> = {};
+  readonly roomEventLogCache: Record<string, EventLogEntry[]> = {};
+  /** Non-temporary raw objects per room keyed by id. */
+  readonly objectsByRoom: Record<string, Record<string, RawRoomObject>> = {};
+  readonly objectsByRoomKeys: Record<string, string[]> = {};
 
-    creeps: Record<string, Creep> = {};
-    structures: Record<string, Structure> = {};
-    ownedStructures: Record<string, OwnedStructure> = {};
-    spawns: Record<string, StructureSpawn> = {};
-    sources: Record<string, Source> = {};
-    energy: Record<string, Resource> = {};
-    flags: Record<string, Flag> = {};
-    constructionSites: Record<string, ConstructionSite> = {};
-    minerals: Record<string, Mineral> = {};
-    deposits: Record<string, Deposit> = {};
-    tombstones: Record<string, Tombstone> = {};
-    nukes: Record<string, Nuke> = {};
-    powerCreeps: Record<string, PowerCreep> = {};
-    ruins: Record<string, Ruin> = {};
-    customObjects: Record<string, RoomObject> = {};
+  creeps: Record<string, Creep> = {};
+  structures: Record<string, Structure> = {};
+  ownedStructures: Record<string, OwnedStructure> = {};
+  spawns: Record<string, StructureSpawn> = {};
+  sources: Record<string, Source> = {};
+  energy: Record<string, Resource> = {};
+  flags: Record<string, Flag> = {};
+  constructionSites: Record<string, ConstructionSite> = {};
+  minerals: Record<string, Mineral> = {};
+  deposits: Record<string, Deposit> = {};
+  tombstones: Record<string, Tombstone> = {};
+  nukes: Record<string, Nuke> = {};
+  powerCreeps: Record<string, PowerCreep> = {};
+  ruins: Record<string, Ruin> = {};
+  customObjects: Record<string, RoomObject> = {};
+  /** Custom object registries keyed by `lookConstant`. */
+  readonly custom: Record<string, Record<string, RoomObject>> = {};
 
-    #map: GameMap | undefined;
-    #market: GameMarket | undefined;
-    readonly #deprecatedShown: string[] = [];
-    readonly #log: (message: string) => void;
+  #map: GameMap | undefined;
+  #market: GameMarket | undefined;
+  readonly #deprecatedShown: string[] = [];
+  readonly #log: (message: string) => void;
 
-    constructor(log: (message: string) => void) {
-        this.#log = log;
+  constructor(log: (message: string) => void) {
+    this.#log = log;
+  }
+
+  get map(): GameMap {
+    if (!this.#map) {
+      throw new Error('Game.map is not initialized yet');
     }
+    return this.#map;
+  }
 
-    get map(): GameMap {
-        if (!this.#map) {
-            throw new Error('Game.map is not initialized yet');
-        }
-        return this.#map;
-    }
+  set map(value: GameMap) {
+    this.#map = value;
+  }
 
-    set map(value: GameMap) {
-        this.#map = value;
+  get market(): GameMarket {
+    if (!this.#market) {
+      throw new Error('Game.market is not initialized yet');
     }
+    return this.#market;
+  }
 
-    get market(): GameMarket {
-        if (!this.#market) {
-            throw new Error('Game.market is not initialized yet');
-        }
-        return this.#market;
-    }
+  set market(value: GameMarket) {
+    this.#market = value;
+  }
 
-    set market(value: GameMarket) {
-        this.#market = value;
+  /** Logs a deprecation message once per tick. */
+  deprecated(message: string): void {
+    if (!this.#deprecatedShown.includes(message)) {
+      this.#deprecatedShown.push(message);
+      this.#log(message);
     }
+  }
 
-    /** Logs a deprecation message once per tick. */
-    deprecated(message: string): void {
-        if (!this.#deprecatedShown.includes(message)) {
-            this.#deprecatedShown.push(message);
-            this.#log(message);
-        }
+  /** Throws when a plain object looking like a serialized game object is used as a target. */
+  assertTargetObject(obj: unknown): void {
+    if (obj && isPlainObject(obj) && isString(obj.id) && obj.id.length == 24) {
+      throw new Error(
+        "It seems you're trying to use a serialized game object stored in Memory which is not allowed. Please use `Game.getObjectById` to retrieve a live object reference instead.",
+      );
     }
-
-    /** Throws when a plain object looking like a serialized game object is used as a target. */
-    assertTargetObject(obj: unknown): void {
-        if (obj && isPlainObject(obj) && isString(obj.id) && obj.id.length == 24) {
-            throw new Error(
-                "It seems you're trying to use a serialized game object stored in Memory which is not allowed. Please use `Game.getObjectById` to retrieve a live object reference instead.",
-            );
-        }
-    }
+  }
 }
 
 /**
@@ -204,35 +220,35 @@ export class Register implements ObjectRegistries {
  * globals are reachable through the index signature.
  */
 export interface SandboxGlobals {
-    [key: string]: unknown;
-    Game: GameObject;
-    /** Lazily parsed memory root; `null` when the stored memory is not valid JSON. */
-    Memory: unknown;
-    RawMemory: RawMemory;
-    console: SandboxConsole;
-    require: RequireFunction;
-    _: unknown;
+  [key: string]: unknown;
+  Game: GameObject;
+  /** Lazily parsed memory root; `null` when the stored memory is not valid JSON. */
+  Memory: unknown;
+  RawMemory: RawMemory;
+  console: SandboxConsole;
+  require: RequireFunction;
+  _: unknown;
 }
 
 export interface GameScope {
-    runtimeData: SandboxRuntimeData;
-    intents: IntentRecorder;
-    register: Register;
-    globals: SandboxGlobals;
+  runtimeData: SandboxRuntimeData;
+  intents: IntentRecorder;
+  register: Register;
+  globals: SandboxGlobals;
 }
 
 let current: GameScope | undefined;
 
 /** The scope of the tick being executed in this sandbox. */
 export function scope(): GameScope {
-    if (!current) {
-        throw new Error('The game API is not initialized');
-    }
-    return current;
+  if (!current) {
+    throw new Error('The game API is not initialized');
+  }
+  return current;
 }
 
 export function setScope(value: GameScope): void {
-    current = value;
+  current = value;
 }
 
 /**
@@ -240,30 +256,32 @@ export function setScope(value: GameScope): void {
  * same `TypeError` as upstream property access when the memory root is not an object.
  */
 export function memoryRoot(): Record<string, unknown> {
-    const memory: unknown = scope().globals.Memory;
-    if (memory === null || memory === undefined) {
-        throw new TypeError(`Cannot read properties of ${String(memory)}`);
-    }
-    if (typeof memory !== 'object') {
-        throw new TypeError('Memory is not an object');
-    }
-    return memory as Record<string, unknown>;
+  const memory: unknown = scope().globals.Memory;
+  if (memory === null || memory === undefined) {
+    throw new TypeError(`Cannot read properties of ${String(memory)}`);
+  }
+  if (typeof memory !== 'object') {
+    throw new TypeError('Memory is not an object');
+  }
+  return memory as Record<string, unknown>;
 }
 
 /** Raw room object by id (`runtimeData.roomObjects[id]`), throwing like upstream `data(id)`. */
-export function rawObject(id: string | undefined): RawRoomObject {
-    const object = id === undefined ? undefined : scope().runtimeData.roomObjects[id];
-    if (!object) {
-        throw new Error('Could not find an object with ID ' + String(id));
-    }
-    return object;
+export function rawObject(id: unknown): RawRoomObject {
+  const key: PropertyKey = typeof id === 'symbol' ? id : jsString(id);
+  // Upstream indexes the plain object directly (inherited keys included).
+  const object: unknown = Reflect.get(scope().runtimeData.roomObjects, key);
+  if (!object) {
+    throw new Error('Could not find an object with ID ' + jsConcat(id));
+  }
+  return object as RawRoomObject;
 }
 
 /** Username of a user referenced by visible data. */
 export function username(userId: string): string {
-    const user = scope().runtimeData.users[userId];
-    if (!user) {
-        throw new TypeError(`Cannot read properties of undefined (reading 'username')`);
-    }
-    return user.username;
+  const user = scope().runtimeData.users[userId];
+  if (!user) {
+    throw new TypeError(`Cannot read properties of undefined (reading 'username')`);
+  }
+  return user.username;
 }

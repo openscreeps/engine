@@ -4,8 +4,16 @@ import * as C from '../../constants.ts';
 import { calcResources, calcRoomsDistance, calcTerminalEnergyCost } from '../../utils/index.ts';
 import type { Bulk } from '../bulk.ts';
 import type { GlobalScope, IntentArgs } from '../scope.ts';
-import type { Effect, MarketOrder, RoomObject, Store, TransactionDoc, UserDoc } from '../state.ts';
-import { contains, shuffle } from '../support.ts';
+import type {
+  Effect,
+  EffectCollection,
+  MarketOrder,
+  RoomObject,
+  Store,
+  TransactionDoc,
+  UserDoc,
+} from '../state.ts';
+import { contains, effectList, shuffle } from '../support.ts';
 
 type DealIntent = IntentArgs<'deal'> & { user?: string };
 type TransactionExtra = Partial<Pick<TransactionDoc, 'description' | 'order'>>;
@@ -15,8 +23,8 @@ type MarketScope = Omit<GlobalScope, 'userIntents' | 'orders'> & {
   orders?: GlobalScope['orders'] | undefined;
 };
 
-function findOperateTerminal(effects: Effect[] | null | undefined): Effect | undefined {
-  return effects ? effects.find((e) => e.power === C.PWR_OPERATE_TERMINAL) : undefined;
+function findOperateTerminal(effects: EffectCollection | null | undefined): Effect | undefined {
+  return effectList(effects).find((e) => e.power === C.PWR_OPERATE_TERMINAL);
 }
 
 function operateTerminalRatio(effect: Effect): number {

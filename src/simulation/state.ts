@@ -30,12 +30,20 @@ export interface BodyPart {
 }
 
 export interface Effect {
-  effect: number;
+  /** Absent on the shield effect of power-created ramparts (upstream omits it). */
+  effect?: number;
   power?: number;
   level?: number;
   endTime: number;
   duration?: number;
 }
+
+/**
+ * Effects of an object. Usually an array, but after a power creep applies a power upstream persists
+ * it as an index-keyed object (`{"0": {...}}`) because the driver bulk merges the new array into
+ * the `null` it wrote just before; all upstream readers use lodash collection functions.
+ */
+export type EffectCollection = Effect[] | Record<string, Effect>;
 
 export interface ActionLogEntry {
   x?: number;
@@ -141,7 +149,7 @@ export interface RoomObject extends Partial<Record<ResourceType, number>> {
   store?: Store;
   storeCapacity?: number | null;
   storeCapacityResource?: StoreCapacityResource;
-  effects?: Effect[] | null;
+  effects?: EffectCollection | null;
   actionLog?: ActionLog;
   off?: boolean;
   cooldown?: number;
@@ -304,6 +312,14 @@ export interface UserDoc {
   blocked?: boolean;
   steam?: unknown;
   resources?: Record<string, number>;
+  /** Wall-clock ms until which full CPU is unlocked (`Game.cpu.unlockedTime`). */
+  cpuUnlockedTime?: number;
+  /** Full CPU unlocked by subscription (`Game.cpu.unlocked` without expiry). */
+  cpuSubscription?: boolean;
+  /** Wall-clock ms until which access to a restricted shard is active (`Game.shard.accessTime`). */
+  shardAccessTime?: number;
+  /** Unlimited restricted-shard access granted by the embedder (subscription). */
+  shardAccessUnlimited?: boolean;
   /** Processing-only: power levels consumed by power creep intents this tick. */
   _usedPowerLevels?: number;
 }
@@ -458,6 +474,8 @@ export type MapView = Record<string, Array<[number, number]>>;
 export interface WorldState {
   gameTime: number;
   shardName: string;
+  /** Shard requires an access key or subscription to claim/reserve/upgrade (official restricted shards). */
+  restrictedShard: boolean;
   rooms: Record<string, RoomInfo>;
   /** 2500-character terrain string per room (`'0'`..`'3'`, row-major `y * 50 + x`). */
   terrain: Record<string, string>;
@@ -486,6 +504,7 @@ export function createWorldState(init: Partial<WorldState> = {}): WorldState {
   return {
     gameTime: init.gameTime ?? 1,
     shardName: init.shardName ?? 'shard0',
+    restrictedShard: init.restrictedShard ?? false,
     rooms: init.rooms ?? {},
     terrain: init.terrain ?? {},
     roomObjects: init.roomObjects ?? {},

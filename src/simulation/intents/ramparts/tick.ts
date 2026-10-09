@@ -6,14 +6,14 @@
 import * as C from '../../../constants.ts';
 import type { RoomScope } from '../../scope.ts';
 import type { RoomObject } from '../../state.ts';
-import { lookup } from '../../support.ts';
+import { lookup, effectList } from '../../support.ts';
 
 export function tickRampart(object: RoomObject, scope: RoomScope): void {
   const { roomObjects, bulk, roomController, gameTime } = scope;
 
   if (object.type != 'rampart') return;
 
-  const effect = object.effects?.find((e) => e.power === C.PWR_SHIELD);
+  const effect = effectList(object.effects).find((e) => e.power === C.PWR_SHIELD);
   if (effect) {
     if (effect.endTime <= gameTime) {
       bulk.remove(object._id);

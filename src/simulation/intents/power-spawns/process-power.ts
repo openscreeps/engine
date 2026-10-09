@@ -7,7 +7,7 @@ import * as C from '../../../constants.ts';
 import { checkStructureAgainstController } from '../../../utils/index.ts';
 import type { IntentArgs, RoomScope } from '../../scope.ts';
 import type { RoomObject } from '../../state.ts';
-import { powerEffect } from '../../support.ts';
+import { powerEffect, effectList } from '../../support.ts';
 
 export function processPower(
   object: RoomObject,
@@ -24,7 +24,7 @@ export function processPower(
   }
 
   let amount = 1;
-  const effect = object.effects?.find((e) => e.power === C.PWR_OPERATE_POWER);
+  const effect = effectList(object.effects).find((e) => e.power === C.PWR_OPERATE_POWER);
   if (effect && effect.endTime >= gameTime) {
     amount = Math.min(
       store.power as number,

@@ -4,7 +4,8 @@
  */
 
 import * as C from '../constants.ts';
-import { collectionValues, isEqual, isNumber } from './lodash.ts';
+import { jsAdd, jsBitAnd, jsGe, jsLe, jsLt, jsSub, looseEquals, toPropertyKey } from './js.ts';
+import { collectionValues, isEqual, isNumber, isObject, isString } from './lodash.ts';
 import { getProp } from './tables.ts';
 import { checkTerrain, type RoomTerrainData, type TerrainSpatial } from './terrain.ts';
 
@@ -34,71 +35,86 @@ export type RoomObjectCollection<T> = Readonly<Record<string, T>> | readonly T[]
  */
 function controllerLimit(type: string, level: number | undefined): number {
   const table = getProp(C.CONTROLLER_STRUCTURES, type);
-  // Reflect.get applies ToPropertyKey, so `undefined` reads the "undefined" key like `table[undefined]`.
-  const limit = getProp(table, level as PropertyKey);
+  // ToPropertyKey(undefined) is "undefined", so a missing level reads `table["undefined"]` like upstream.
+  const limit = getProp(table, toPropertyKey(level));
   return typeof limit === 'number' ? limit : NaN;
 }
 
-function isTerrainSpatial(objects: unknown): objects is TerrainSpatial {
-  if (!Array.isArray(objects)) {
+/** Upstream `objects && _.isArray(objects[0]) && _.isString(objects[0][0])`. */
+function isTerrainSpatial(objects: unknown): boolean {
+  if (!objects) {
     return false;
   }
-  const firstRow: unknown = objects[0];
-  return Array.isArray(firstRow) && typeof firstRow[0] === 'string';
+  const firstRow = getProp(objects, 0);
+  return Array.isArray(firstRow) && isString(getProp(firstRow, 0));
 }
 
-function spatialCode(grid: TerrainSpatial, x: number, y: number): number {
-  const row = grid[y];
-  if (!row) {
-    throw new TypeError(`Cannot read properties of undefined (reading '${String(x)}')`);
+/** Upstream `objects[y][x] & mask` with raw (player-supplied) coordinates. */
+function spatialMasked(grid: unknown, x: unknown, y: unknown, mask: number): number | bigint {
+  // Keys are converted after each base is read, exactly like `grid[y][x]`.
+  return jsBitAnd(getProp(getProp(grid, toPropertyKey(y)), toPropertyKey(x)), mask);
+}
+
+/** lodash 3 `_.matches` predicate for a single `[key, srcValue]` pair (strict for primitives, isEqual otherwise). */
+function matchesProperty(object: object, key: string, srcValue: unknown): boolean {
+  const isStrictComparable = !Number.isNaN(srcValue) && !isObject(srcValue);
+  if (isStrictComparable) {
+    return getProp(object, key) === srcValue && (srcValue !== undefined || key in object);
   }
-  return Number(row[x]);
+  return key in object && isEqual(srcValue, getProp(object, key));
 }
 
 /**
  * Whether a construction site of `structureType` may be placed at `(x, y)`.
  * `objects` is either the room terrain (string / `Uint8Array` / spatial grid), checking terrain rules
  * only, or the room objects collection, checking occupancy rules — exactly the upstream overload.
+ * `structureType`, `x` and `y` may be raw player values: every comparison and arithmetic step uses the
+ * upstream JS operators (`==`, `+`, `-`, `<=`, …) with their coercions.
  */
 export function checkConstructionSite(
-  objects: RoomTerrainData | TerrainSpatial | RoomObjectCollection<RoomObjectLike>,
-  structureType: string,
-  x: number,
-  y: number,
+  objects:
+    RoomTerrainData | TerrainSpatial | RoomObjectCollection<RoomObjectLike> | null | undefined,
+  structureType: unknown,
+  x: unknown,
+  y: unknown,
 ): boolean {
-  let borderTiles: [number, number][] | undefined;
+  let borderTiles: [unknown, unknown][] | undefined;
   if (
-    structureType !== 'road' &&
-    structureType !== 'container' &&
-    (x === 1 || x === 48 || y === 1 || y === 48)
+    !looseEquals(structureType, 'road') &&
+    !looseEquals(structureType, 'container') &&
+    (looseEquals(x, 1) || looseEquals(x, 48) || looseEquals(y, 1) || looseEquals(y, 48))
   ) {
-    if (x === 1)
+    if (looseEquals(x, 1)) {
       borderTiles = [
-        [0, y - 1],
+        [0, jsSub(y, 1)],
         [0, y],
-        [0, y + 1],
+        [0, jsAdd(y, 1)],
       ];
-    if (x === 48)
+    }
+    if (looseEquals(x, 48)) {
       borderTiles = [
-        [49, y - 1],
+        [49, jsSub(y, 1)],
         [49, y],
-        [49, y + 1],
+        [49, jsAdd(y, 1)],
       ];
-    if (y === 1)
+    }
+    if (looseEquals(y, 1)) {
       borderTiles = [
-        [x - 1, 0],
+        [jsSub(x, 1), 0],
         [x, 0],
-        [x + 1, 0],
+        [jsAdd(x, 1), 0],
       ];
-    if (y === 48)
+    }
+    if (looseEquals(y, 48)) {
       borderTiles = [
-        [x - 1, 49],
+        [jsSub(x, 1), 49],
         [x, 49],
-        [x + 1, 49],
+        [jsAdd(x, 1), 49],
       ];
+    }
   }
 
-  if (typeof objects === 'string' || objects instanceof Uint8Array) {
+  if (isString(objects) || objects instanceof Uint8Array) {
     if (borderTiles) {
       for (const [bx, by] of borderTiles) {
         if (!checkTerrain(objects, bx, by, C.TERRAIN_MASK_WALL)) {
@@ -106,10 +122,10 @@ export function checkConstructionSite(
         }
       }
     }
-    if (structureType === 'extractor') {
+    if (looseEquals(structureType, 'extractor')) {
       return true;
     }
-    if (structureType !== 'road' && checkTerrain(objects, x, y, C.TERRAIN_MASK_WALL)) {
+    if (!looseEquals(structureType, 'road') && checkTerrain(objects, x, y, C.TERRAIN_MASK_WALL)) {
       return false;
     }
     return true;
@@ -118,24 +134,26 @@ export function checkConstructionSite(
   if (isTerrainSpatial(objects)) {
     if (borderTiles) {
       for (const [bx, by] of borderTiles) {
-        if (!(spatialCode(objects, bx, by) & C.TERRAIN_MASK_WALL)) {
+        if (!spatialMasked(objects, bx, by, C.TERRAIN_MASK_WALL)) {
           return false;
         }
       }
     }
-    if (structureType === 'extractor') {
+    if (looseEquals(structureType, 'extractor')) {
       return true;
     }
-    if (structureType !== 'road' && spatialCode(objects, x, y) & C.TERRAIN_MASK_WALL) {
+    if (!looseEquals(structureType, 'road') && spatialMasked(objects, x, y, C.TERRAIN_MASK_WALL)) {
       return false;
     }
     return true;
   }
 
-  // A spatial grid was excluded above; what remains is a room-object collection.
-  const list = collectionValues(objects);
-  const at = (i: RoomObjectLike, type: string): boolean =>
-    isEqual(i.x, x) && isEqual(i.y, y) && isEqual(i.type, type);
+  // Spatial grids and terrain strings were handled above; what remains is a room-object collection.
+  const roomObjects = objects as RoomObjectCollection<RoomObjectLike> | null | undefined;
+  const list = collectionValues(roomObjects);
+  // `_.any(objects, {x, y, type})`: lodash checks the pairs last-to-first, then first-to-last.
+  const at = (i: RoomObjectLike, type: unknown): boolean =>
+    matchesProperty(i, 'type', type) && matchesProperty(i, 'y', y) && matchesProperty(i, 'x', x);
 
   if (list.some((i) => at(i, structureType))) {
     return false;
@@ -143,16 +161,16 @@ export function checkConstructionSite(
   if (list.some((i) => at(i, 'constructionSite'))) {
     return false;
   }
-  if (structureType === 'extractor') {
+  if (looseEquals(structureType, 'extractor')) {
     return list.some((i) => at(i, 'mineral')) && !list.some((i) => at(i, 'extractor'));
   }
   if (
-    structureType !== 'rampart' &&
-    structureType !== 'road' &&
+    !looseEquals(structureType, 'rampart') &&
+    !looseEquals(structureType, 'road') &&
     list.some(
       (i) =>
-        i.x === x &&
-        i.y === y &&
+        looseEquals(i.x, x) &&
+        looseEquals(i.y, y) &&
         i.type !== 'rampart' &&
         i.type !== 'road' &&
         Boolean(getProp(C.CONSTRUCTION_COST, i.type)),
@@ -160,7 +178,7 @@ export function checkConstructionSite(
   ) {
     return false;
   }
-  if (x <= 0 || y <= 0 || x >= 49 || y >= 49) {
+  if (jsLe(x, 0) || jsLe(y, 0) || jsGe(x, 49) || jsGe(y, 49)) {
     return false;
   }
   return true;
@@ -169,18 +187,18 @@ export function checkConstructionSite(
 /**
  * Whether one more structure of `type` is allowed by the controller level. `roomController` is the
  * controller object (counted only when owned/leveled) or a level number; `offset` widens the limit.
+ * `type` may be a raw player value (compared with `==`, used as a property key like upstream).
  */
 export function checkControllerAvailability(
-  type: string,
-  roomObjects: RoomObjectCollection<RoomObjectLike>,
+  type: unknown,
+  roomObjects: RoomObjectCollection<RoomObjectLike> | null | undefined,
   roomController: ControllerLike | number | null | undefined,
   offset?: number,
 ): boolean {
-  let rcl = 0;
+  let rcl: unknown = 0;
 
   if (
-    typeof roomController === 'object' &&
-    roomController !== null &&
+    isObject(roomController) &&
     roomController.level &&
     (roomController.user || roomController.owner)
   ) {
@@ -191,12 +209,15 @@ export function checkControllerAvailability(
   }
 
   const structuresCnt = collectionValues(roomObjects).filter(
-    (i) => i.type === type || (i.type === 'constructionSite' && i.structureType === type),
+    (i) =>
+      looseEquals(i.type, type) ||
+      (i.type === 'constructionSite' && looseEquals(i.structureType, type)),
   ).length;
-  // A level missing from the table yields NaN, which never admits a structure (as upstream's `undefined + offset`).
-  const availableCnt = controllerLimit(type, rcl) + (offset || 0);
+  // Exactly `CONTROLLER_STRUCTURES[type][rcl] + offset`.
+  const table = getProp(C.CONTROLLER_STRUCTURES, toPropertyKey(type));
+  const availableCnt = jsAdd(getProp(table, toPropertyKey(rcl)), offset || 0);
 
-  return structuresCnt < availableCnt;
+  return jsLt(structuresCnt, availableCnt);
 }
 
 /**

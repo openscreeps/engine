@@ -19,59 +19,59 @@ export const INTENT_CPU = 0.2;
 const FREE_METHODS: Record<string, true> = { say: true, pull: true };
 
 export class IntentRecorder {
-    readonly list: IntentList = Object.create(null) as IntentList;
-    cpu = 0;
+  readonly list: IntentList = Object.create(null) as IntentList;
+  cpu = 0;
 
-    #objectEntry(id: string): ObjectIntentList {
-        const existing = this.list[id];
-        if (existing && !Array.isArray(existing)) {
-            return existing;
-        }
-        const created = Object.create(null) as ObjectIntentList;
-        this.list[id] = created;
-        return created;
+  #objectEntry(id: string): ObjectIntentList {
+    const existing = this.list[id];
+    if (existing && !Array.isArray(existing)) {
+      return existing;
     }
+    const created = Object.create(null) as ObjectIntentList;
+    this.list[id] = created;
+    return created;
+  }
 
-    set(id: string, name: string, data: unknown): void {
-        const entry = this.#objectEntry(id);
-        if (!FREE_METHODS[name] && !entry[name]) {
-            this.cpu += INTENT_CPU;
-        }
-        entry[name] = data;
+  set(id: string, name: string, data: unknown): void {
+    const entry = this.#objectEntry(id);
+    if (!FREE_METHODS[name] && !entry[name]) {
+      this.cpu += INTENT_CPU;
     }
+    entry[name] = data;
+  }
 
-    push(name: string, data: unknown, maxLen?: number): boolean {
-        const existing = this.list[name];
-        const list = Array.isArray(existing) ? existing : [];
-        this.list[name] = list;
-        if (maxLen && list.length >= maxLen) {
-            return false;
-        }
-        list.push(data);
-        this.cpu += INTENT_CPU;
-        return true;
+  push(name: string, data: unknown, maxLen?: number): boolean {
+    const existing = this.list[name];
+    const list = Array.isArray(existing) ? existing : [];
+    this.list[name] = list;
+    if (maxLen && list.length >= maxLen) {
+      return false;
     }
+    list.push(data);
+    this.cpu += INTENT_CPU;
+    return true;
+  }
 
-    pushByName(id: string, name: string, data: unknown, maxLen?: number): boolean {
-        const entry = this.#objectEntry(id);
-        const existing = entry[name];
-        const list: unknown[] = Array.isArray(existing) ? existing : [];
-        entry[name] = list;
-        if (maxLen && list.length >= maxLen) {
-            return false;
-        }
-        list.push(data);
-        this.cpu += INTENT_CPU;
-        return true;
+  pushByName(id: string, name: string, data: unknown, maxLen?: number): boolean {
+    const entry = this.#objectEntry(id);
+    const existing = entry[name];
+    const list: unknown[] = Array.isArray(existing) ? existing : [];
+    entry[name] = list;
+    if (maxLen && list.length >= maxLen) {
+      return false;
     }
+    list.push(data);
+    this.cpu += INTENT_CPU;
+    return true;
+  }
 
-    remove(id: string, name: string): boolean {
-        const entry = this.list[id];
-        if (entry && !Array.isArray(entry) && entry[name]) {
-            delete entry[name];
-            this.cpu -= INTENT_CPU;
-            return true;
-        }
-        return false;
+  remove(id: string, name: string): boolean {
+    const entry = this.list[id];
+    if (entry && !Array.isArray(entry) && entry[name]) {
+      Reflect.deleteProperty(entry, name);
+      this.cpu -= INTENT_CPU;
+      return true;
     }
+    return false;
+  }
 }

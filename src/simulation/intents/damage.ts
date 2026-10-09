@@ -7,6 +7,7 @@ import * as C from '../../constants.ts';
 import { calcBodyEffectiveness, sendAttackingNotification } from '../../utils/index.ts';
 import type { RoomScope } from '../scope.ts';
 import type { ActionLog, RoomObject } from '../state.ts';
+import { effectList } from '../support.ts';
 import { clearNewbieWalls } from './creeps/clear-newbie-walls.ts';
 import { destroyStructure } from './structures/destroy.ts';
 
@@ -47,7 +48,7 @@ export function applyDamage(
       attackType !== C.EVENT_ATTACK_TYPE_NUKE &&
       (target.type === 'constructedWall' || target.type === 'rampart')
     ) {
-      const effect = (target.effects ?? []).find(
+      const effect = effectList(target.effects).find(
         (e) =>
           (e.power === C.PWR_FORTIFY || e.effect === C.EFFECT_INVULNERABILITY) &&
           e.endTime > gameTime,

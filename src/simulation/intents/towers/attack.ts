@@ -7,7 +7,7 @@ import * as C from '../../../constants.ts';
 import { sendAttackingNotification } from '../../../utils/index.ts';
 import type { IntentArgs, RoomScope } from '../../scope.ts';
 import type { ActionLog, RoomObject } from '../../state.ts';
-import { powerEffect } from '../../support.ts';
+import { powerEffect, effectList } from '../../support.ts';
 import { applyDamage } from '../damage.ts';
 
 /** Tower action power with range falloff and operate/disrupt effects, as upstream. */
@@ -28,7 +28,7 @@ export function towerActionAmount(
       (C.TOWER_FALLOFF_RANGE - C.TOWER_OPTIMAL_RANGE);
   }
   [C.PWR_OPERATE_TOWER, C.PWR_DISRUPT_TOWER].forEach((power) => {
-    const effect = object.effects?.find((e) => e.power === power);
+    const effect = effectList(object.effects).find((e) => e.power === power);
     if (effect && effect.endTime > gameTime) {
       amount *= powerEffect(power, effect.level);
     }

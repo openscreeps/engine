@@ -11,7 +11,9 @@ import type {
   PositionSource,
   RoomPosLike,
 } from '../types/index.ts';
+import { jsConcat, jsGt, jsLt } from './js.ts';
 import { isNaNValue, isNumber, isObject } from './lodash.ts';
+import { getProp } from './tables.ts';
 
 export type DirectionOffset = readonly [dx: number, dy: number];
 
@@ -162,32 +164,39 @@ export interface PathStep {
   direction: DirectionConstant;
 }
 
+/** Path step shape accepted by {@link serializePath}; values may be raw player data. */
 export interface SerializablePathStep {
-  readonly x: number;
-  readonly y: number;
-  readonly direction: number | undefined;
+  readonly x: unknown;
+  readonly y: unknown;
+  readonly direction: unknown;
 }
 
-/** `Room.serializePath`: 2-digit x, 2-digit y of the first step, then one direction digit per step. */
-export function serializePath(path: readonly SerializablePathStep[]): string {
-  // Runtime guard for values coming from player code; checked on an `unknown` alias so `path` keeps its type.
-  const candidate: unknown = path;
-  if (!Array.isArray(candidate)) {
+/**
+ * `Room.serializePath`: 2-digit x, 2-digit y of the first step, then one direction per step.
+ * Every read, comparison and concatenation follows upstream's JS expressions on raw values
+ * (`path[0].x > 9 ? path[0].x : '0' + path[0].x`, `result += path[i].direction`).
+ */
+export function serializePath(path: unknown): string {
+  if (!Array.isArray(path)) {
     throw new Error('path is not an array');
   }
   let result = '';
-  const first = path[0];
-  if (!first) {
+  if (!getProp(path, 'length')) {
     return result;
   }
-  if (first.x < 0 || first.y < 0) {
+  if (jsLt(getProp(getProp(path, 0), 'x'), 0) || jsLt(getProp(getProp(path, 0), 'y'), 0)) {
     throw new Error('path coordinates cannot be negative');
   }
-  result += first.x > 9 ? String(first.x) : `0${String(first.x)}`;
-  result += first.y > 9 ? String(first.y) : `0${String(first.y)}`;
+  // `result += v` with a string `result` appends ToString(ToPrimitive(v, default)), i.e. `'' + v`.
+  result += jsGt(getProp(getProp(path, 0), 'x'), 9)
+    ? jsConcat(getProp(getProp(path, 0), 'x'))
+    : `0${jsConcat(getProp(getProp(path, 0), 'x'))}`;
+  result += jsGt(getProp(getProp(path, 0), 'y'), 9)
+    ? jsConcat(getProp(getProp(path, 0), 'y'))
+    : `0${jsConcat(getProp(getProp(path, 0), 'y'))}`;
 
-  for (const step of path) {
-    result += String(step.direction);
+  for (let i = 0; jsLt(i, getProp(path, 'length')); i++) {
+    result += jsConcat(getProp(getProp(path, i), 'direction'));
   }
   return result;
 }

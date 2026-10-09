@@ -7,6 +7,7 @@
  */
 
 import * as C from '../constants.ts';
+import type { Effect, EffectCollection } from './state.ts';
 
 export type PlainRecord = Record<string, unknown>;
 
@@ -202,6 +203,14 @@ export function powerEffect(power: string | number, level: number | undefined): 
 /** Membership test of an arbitrary value in a constant list (lodash `_.contains`). */
 export function contains(list: readonly unknown[], value: unknown): boolean {
   return list.includes(value);
+}
+
+/** lodash collection view of an object's effects (array or index-keyed object, see `EffectCollection`). */
+export function effectList(effects: EffectCollection | null | undefined): Effect[] {
+  if (!effects) {
+    return [];
+  }
+  return Array.isArray(effects) ? effects : Object.values(effects);
 }
 
 /** lodash `_.sum` over values of a record or array, treating missing values as 0 like `+value`. */

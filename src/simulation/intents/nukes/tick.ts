@@ -6,6 +6,7 @@
 import * as C from '../../../constants.ts';
 import type { RoomScope } from '../../scope.ts';
 import type { RoomObject } from '../../state.ts';
+import { effectList } from '../../support.ts';
 import { creepDie } from '../creeps/die.ts';
 import { applyDamage } from '../damage.ts';
 
@@ -82,7 +83,7 @@ export function tickNuke(object: RoomObject, scope: RoomScope): void {
 
       if (
         (roomController.user &&
-          !(roomController.effects ?? []).some(
+          !effectList(roomController.effects).some(
             (e) => e.effect == C.EFFECT_INVULNERABILITY && e.endTime > gameTime,
           ) &&
           !roomController.upgradeBlocked) ||

@@ -7,6 +7,7 @@ import {
 } from './runtime/index.ts';
 import {
   Simulation,
+  type ManualIntents,
   type SimulationOptions,
   type TickIntents,
   type TickResult,
@@ -76,11 +77,11 @@ export class Engine implements Disposable {
   }
 
   /** Resolve explicit intents without running player scripts. */
-  processIntents(intents: TickIntents): TickResult {
+  processIntents(intents: TickIntents, manualIntents?: ManualIntents): TickResult {
     this.#assertIdle();
     this.#running = true;
     try {
-      return this.#simulation.tick(intents);
+      return this.#simulation.tick(intents, manualIntents);
     } finally {
       this.#running = false;
     }

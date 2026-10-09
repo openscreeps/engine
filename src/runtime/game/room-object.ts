@@ -5,46 +5,51 @@
  * used under the ISC license (see THIRD_PARTY_NOTICES.md).
  */
 
-import type { Effect } from '../../simulation/state.ts';
-import { finalizeClass } from './define.ts';
+import { jsString, jsSub } from '../../utils/js.ts';
+import { collectionValues } from '../../utils/lodash.ts';
+import { getProp } from '../../utils/tables.ts';
+import { gameConstructor, type GameConstructor } from './define.ts';
 import { RoomPosition } from './room-position.ts';
 import type { Room } from './rooms.ts';
 import { scope } from './scope.ts';
 
 export interface RoomObjectEffect {
-    power: number | undefined;
-    effect: number;
-    level: number | undefined;
-    ticksRemaining: number;
+  power: number | undefined;
+  effect: number | undefined;
+  level: number | undefined;
+  ticksRemaining: number;
 }
 
-export class RoomObject {
-    declare room: Room | undefined;
-    declare pos: RoomPosition;
-    declare effects?: RoomObjectEffect[];
+class RoomObjectImpl {
+  declare room: Room | undefined;
+  declare pos: RoomPosition;
+  declare effects?: RoomObjectEffect[];
+}
 
-    /**
-     * Upstream subclasses skip `RoomObject.call` when constructed without an id; calling this
-     * constructor with no position arguments reproduces that by leaving the instance empty.
-     */
-    constructor(x?: number, y?: number, room?: string, effects?: readonly Effect[] | null) {
-        if (x === undefined && y === undefined && room === undefined) {
-            return;
-        }
-        const { register, runtimeData } = scope();
-        this.room = room === undefined ? undefined : register.rooms[room];
-        this.pos = new RoomPosition(x, y, room);
-        if (effects) {
-            this.effects = effects
-                .map((i) => ({
-                    power: i.power,
-                    effect: i.effect,
-                    level: i.level,
-                    ticksRemaining: i.endTime - runtimeData.time,
-                }))
-                .filter((i) => i.ticksRemaining > 0);
-        }
+export type RoomObject = RoomObjectImpl;
+
+/** Upstream `register.wrapFn(function(x, y, room, effects) {…})`. */
+export const RoomObject: GameConstructor<
+  RoomObject,
+  [x?: unknown, y?: unknown, room?: unknown, effects?: unknown]
+> = gameConstructor(
+  RoomObjectImpl,
+  function (this: RoomObject, x?: unknown, y?: unknown, room?: unknown, effects?: unknown): void {
+    const { register, runtimeData } = scope();
+    this.room = Reflect.get(register.rooms, typeof room === 'symbol' ? room : jsString(room)) as
+      Room | undefined;
+    this.pos = new RoomPosition(x, y, room);
+    if (effects) {
+      // `_(effects).map(...).filter(...)` over any lodash collection.
+      this.effects = collectionValues(effects)
+        .map((i: unknown) => ({
+          power: getProp(i, 'power') as number | undefined,
+          effect: getProp(i, 'effect') as number | undefined,
+          level: getProp(i, 'level') as number | undefined,
+          ticksRemaining: jsSub(getProp(i, 'endTime'), runtimeData.time) as number,
+        }))
+        .filter((i) => i.ticksRemaining > 0);
     }
-}
-
-finalizeClass(RoomObject, { enumerableConstructor: false });
+  },
+  { name: '', length: 4, enumerableConstructor: false },
+);

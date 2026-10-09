@@ -3,7 +3,8 @@ export function getProp(target: unknown, key: PropertyKey): unknown {
   if (target === null || target === undefined) {
     throw new TypeError(`Cannot read properties of ${String(target)} (reading '${String(key)}')`);
   }
-  const value: unknown = Reflect.get(Object(target), key);
+  // Getters see the original (possibly primitive) value as `this`, exactly like `target[key]`.
+  const value: unknown = Reflect.get(Object(target), key, target);
   return value;
 }
 

@@ -2,124 +2,165 @@
  * PathFinder and CostMatrix (screeps/engine `src/game/path-finder.js`, screeps/driver
  * `lib/path-finder.js`). The driver-level search is implemented by the shared terrain PathFinder.
  *
+ * Upstream builds these once per sandbox from anonymous strict-mode functions wrapped by the
+ * identity `register.wrapFn`, so `CostMatrix` is a plain function (callable without `new`) and every
+ * function here has an empty `name`.
+ *
  * Portions derived from screeps/engine and screeps/driver, Copyright (c) 2016, Artem Chivchalov
  * <contact@screeps.com>, used under the ISC license (see THIRD_PARTY_NOTICES.md).
  */
 
 import { PathFinder as TerrainPathFinder } from '../../utils/pathfinder.ts';
-import { exposeGlobal, finalizeClass } from './define.ts';
+import { exposeGlobal } from './define.ts';
 import { RoomPosition } from './room-position.ts';
-import { scope } from './scope.ts';
+import { scope, type Register } from './scope.ts';
 
 /** 2d array of costs for pathfinding. */
-export class CostMatrix {
-    declare _bits: Uint8Array;
-
-    constructor() {
-        this._bits = new Uint8Array(2500);
-    }
-
-    set(xx: unknown, yy: unknown, val: unknown): void {
-        const x = Number(xx) | 0;
-        const y = Number(yy) | 0;
-        this._bits[x * 50 + y] = Math.min(Math.max(0, Number(val)), 255);
-    }
-
-    get(xx: unknown, yy: unknown): number | undefined {
-        const x = Number(xx) | 0;
-        const y = Number(yy) | 0;
-        return this._bits[x * 50 + y];
-    }
-
-    clone(): CostMatrix {
-        const newMatrix = new CostMatrix();
-        newMatrix._bits = new Uint8Array(this._bits);
-        return newMatrix;
-    }
-
-    serialize(): number[] {
-        return Array.from(new Uint32Array(this._bits.buffer));
-    }
-
-    static deserialize(data: unknown): CostMatrix {
-        const instance = Object.create(CostMatrix.prototype) as CostMatrix;
-        // Boundary: upstream hands any player value to the Uint32Array constructor.
-        instance._bits = new Uint8Array(new Uint32Array(data as ArrayLike<number>).buffer);
-        return instance;
-    }
+export interface CostMatrix {
+  _bits: Uint8Array;
+  set(xx: unknown, yy: unknown, val: unknown): void;
+  get(xx: unknown, yy: unknown): number | undefined;
+  clone(): CostMatrix;
+  serialize(): number[];
 }
-// Upstream is a plain function: `constructor` keeps its default non-enumerable descriptor.
-finalizeClass(CostMatrix, { enumerableConstructor: false });
+
+export interface CostMatrixConstructor {
+  new (): CostMatrix;
+  prototype: CostMatrix;
+  deserialize(data: unknown): CostMatrix;
+}
+
+/** Identity wrapper standing in for upstream `register.wrapFn`: keeps function expressions anonymous. */
+function wrapFn<F>(fn: F): F {
+  return fn;
+}
+
+// Boundary: a plain constructor function typed through its construct signature (upstream is not a class).
+export const CostMatrix = wrapFn(function (this: CostMatrix) {
+  this._bits = new Uint8Array(2500);
+}) as unknown as CostMatrixConstructor;
+
+// Prototype assignments keep the methods anonymous and enumerable like upstream; operators work on the
+// untrusted arguments through `as number` so the native conversions (and BigInt errors) apply.
+CostMatrix.prototype.set = function (
+  this: CostMatrix,
+  xx: unknown,
+  yy: unknown,
+  val: unknown,
+): void {
+  const x = (xx as number) | 0;
+  const y = (yy as number) | 0;
+  this._bits[x * 50 + y] = Math.min(Math.max(0, val as number), 255);
+};
+
+CostMatrix.prototype.get = function (
+  this: CostMatrix,
+  xx: unknown,
+  yy: unknown,
+): number | undefined {
+  const x = (xx as number) | 0;
+  const y = (yy as number) | 0;
+  return this._bits[x * 50 + y];
+};
+
+CostMatrix.prototype.clone = function (this: CostMatrix): CostMatrix {
+  const newMatrix = new CostMatrix();
+  newMatrix._bits = new Uint8Array(this._bits);
+  return newMatrix;
+};
+
+CostMatrix.prototype.serialize = function (this: CostMatrix): number[] {
+  return Array.prototype.slice.apply(new Uint32Array(this._bits.buffer)) as number[];
+};
+
+CostMatrix.deserialize = function (data: unknown): CostMatrix {
+  const instance = Object.create(CostMatrix.prototype) as CostMatrix;
+  // Boundary: upstream hands any player value to the Uint32Array constructor.
+  instance._bits = new Uint8Array(new Uint32Array(data as ArrayLike<number>).buffer);
+  return instance;
+};
 
 export interface PathFinderResult {
-    path: RoomPosition[];
-    ops: number;
-    cost?: number;
-    incomplete?: boolean;
+  path: RoomPosition[];
+  ops: number;
+  cost?: number;
+  incomplete?: boolean;
 }
 
 export interface PathFinderApi {
-    readonly CostMatrix: typeof CostMatrix;
-    search(origin: unknown, goal: unknown, options?: unknown): PathFinderResult;
-    use(isActive: unknown): void;
+  readonly CostMatrix: CostMatrixConstructor;
+  search(origin: unknown, goal: unknown, options?: unknown): PathFinderResult;
+  use(isActive: unknown): void;
 }
 
 let terrainPathFinder: TerrainPathFinder | undefined;
 const loadedRooms = new Set<string>();
 
+/**
+ * The register of the tick that created `PathFinder` (upstream closes over the first `make` call's
+ * register, so later `PathFinder.use` calls only touch that stale register).
+ */
+let pathFinderRegister: Register | undefined;
+
 /** Loads terrain of rooms that appeared in `staticTerrainData` since the last call. */
 function syncTerrain(): TerrainPathFinder {
-    const finder = terrainPathFinder ?? new TerrainPathFinder();
-    terrainPathFinder = finder;
-    const terrainData = scope().runtimeData.staticTerrainData;
-    const added: { room: string; terrain: Uint8Array }[] = [];
-    for (const room of Object.keys(terrainData)) {
-        const terrain = terrainData[room];
-        if (terrain && !loadedRooms.has(room)) {
-            loadedRooms.add(room);
-            added.push({ room, terrain });
-        }
+  const finder = terrainPathFinder ?? new TerrainPathFinder();
+  terrainPathFinder = finder;
+  const terrainData = scope().runtimeData.staticTerrainData;
+  const added: { room: string; terrain: Uint8Array }[] = [];
+  for (const room of Object.keys(terrainData)) {
+    const terrain = terrainData[room];
+    if (terrain && !loadedRooms.has(room)) {
+      loadedRooms.add(room);
+      added.push({ room, terrain });
     }
-    if (added.length) {
-        finder.loadTerrain(added);
-    }
-    return finder;
+  }
+  if (added.length) {
+    finder.loadTerrain(added);
+  }
+  return finder;
 }
 
 export const PathFinder: PathFinderApi = Object.create(Object.prototype, {
-    CostMatrix: {
-        enumerable: true,
-        value: CostMatrix,
-    },
+  CostMatrix: {
+    enumerable: true,
+    value: CostMatrix,
+  },
 
-    search: {
-        enumerable: true,
-        value: function (origin: unknown, goal: unknown, options?: unknown): PathFinderResult {
-            if (!goal || (Array.isArray(goal) && !goal.length)) {
-                return { path: [], ops: 0 };
-            }
-            return syncTerrain().search(origin, goal, options, (x, y, roomName) => new RoomPosition(x, y, roomName));
-        },
-    },
+  search: {
+    enumerable: true,
+    value: wrapFn(function (origin: unknown, goal: unknown, options?: unknown): PathFinderResult {
+      if (!goal || (Array.isArray(goal) && !goal.length)) {
+        return { path: [], ops: 0 };
+      }
+      return syncTerrain().search(
+        origin,
+        goal,
+        options,
+        (x, y, roomName) => new RoomPosition(x, y, roomName),
+      );
+    }),
+  },
 
-    use: {
-        enumerable: true,
-        value: function (isActive: unknown): void {
-            const { register } = scope();
-            if (!isActive) {
-                register.deprecated('`PathFinder.use` is considered deprecated and will be removed soon.');
-            }
-            register._useNewPathFinder = !!isActive;
-        },
-    },
+  use: {
+    enumerable: true,
+    value: wrapFn(function (isActive: unknown): void {
+      const register = pathFinderRegister ?? scope().register;
+      if (!isActive) {
+        register.deprecated('`PathFinder.use` is considered deprecated and will be removed soon.');
+      }
+      register._useNewPathFinder = !!isActive;
+    }),
+  },
 }) as PathFinderApi;
 
 export function make(): void {
-    syncTerrain();
+  syncTerrain();
 
-    if (scope().globals.PathFinder) {
-        return;
-    }
+  if (scope().globals.PathFinder) {
+    return;
+  }
 
-    exposeGlobal('PathFinder', PathFinder);
+  pathFinderRegister = scope().register;
+  exposeGlobal('PathFinder', PathFinder);
 }

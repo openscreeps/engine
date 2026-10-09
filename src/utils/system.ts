@@ -5,59 +5,12 @@
 
 import * as C from '../constants.ts';
 import type { BodyPartConstant } from '../types/index.ts';
+import { jsConcat } from './js.ts';
 import { isObject } from './lodash.ts';
 import { getProp } from './tables.ts';
 
 /** One raw intent payload as recorded by the player runtime (untrusted values). */
 export type RawIntent = Readonly<Record<string, unknown>>;
-
-/** ECMAScript OrdinaryToPrimitive/ToPrimitive with the `default` hint (what `'' + value` applies). */
-function toPrimitiveDefault(value: unknown): unknown {
-  if (!isObject(value)) {
-    return value;
-  }
-  const exotic: unknown = Reflect.get(value, Symbol.toPrimitive);
-  if (exotic !== undefined && exotic !== null) {
-    if (typeof exotic !== 'function') {
-      throw new TypeError('Symbol.toPrimitive is not a function');
-    }
-    const result: unknown = Reflect.apply(exotic, value, ['default']);
-    if (isObject(result)) {
-      throw new TypeError('Cannot convert object to primitive value');
-    }
-    return result;
-  }
-  for (const method of ['valueOf', 'toString']) {
-    const fn: unknown = Reflect.get(value, method);
-    if (typeof fn === 'function') {
-      const result: unknown = Reflect.apply(fn, value, []);
-      if (!isObject(result)) {
-        return result;
-      }
-    }
-  }
-  throw new TypeError('Cannot convert object to primitive value');
-}
-
-/** JS `"" + value`, which upstream used for string coercion (default-hint ToPrimitive, then ToString). */
-function concatString(value: unknown): string {
-  const primitive = toPrimitiveDefault(value);
-  switch (typeof primitive) {
-    case 'string':
-      return primitive;
-    case 'number':
-    case 'boolean':
-    case 'bigint':
-      return String(primitive);
-    case 'undefined':
-      return 'undefined';
-    case 'symbol':
-      throw new TypeError('Cannot convert a Symbol value to a string');
-    default:
-      // Only `null` remains: functions and objects were converted to primitives above.
-      return 'null';
-  }
-}
 
 /** JS `parseInt(value)` on an arbitrary value (ToString, then parse). */
 function parseIntValue(value: unknown): number {
@@ -112,7 +65,7 @@ export type TransformResult<T extends TransformName> = TransformResults[T];
 export const transforms: {
   readonly [K in TransformName]: (value: unknown) => TransformResults[K];
 } = {
-  string: (value: unknown): string => concatString(value),
+  string: (value: unknown): string => jsConcat(value),
   number: (value: unknown): number => parseIntValue(value),
   boolean: (value: unknown): boolean => !!value,
   price: (value: unknown): number => {
@@ -120,12 +73,12 @@ export const transforms: {
     return parseInt((1000 * operand).toFixed(0));
   },
   'string[]': (value: unknown): string[] | undefined =>
-    Array.isArray(value) ? value.map((i: unknown) => concatString(i)) : undefined,
+    Array.isArray(value) ? value.map((i: unknown) => jsConcat(i)) : undefined,
   'number[]': (value: unknown): number[] | undefined =>
     Array.isArray(value) ? value.map((i: unknown) => parseIntValue(i)) : undefined,
   'bodypart[]': (value: unknown): BodyPartConstant[] => filterSource(value).filter(isBodyPart),
-  userString: (value: unknown): string => concatString(value || '').substring(0, 100),
-  userText: (value: unknown): string => concatString(value || '').substring(0, 1000),
+  userString: (value: unknown): string => jsConcat(value || '').substring(0, 100),
+  userText: (value: unknown): string => jsConcat(value || '').substring(0, 1000),
 };
 
 export type IntentSchema = Readonly<Record<string, TransformName>>;
@@ -227,6 +180,11 @@ export const intentTypes = {
   upgradeController: { id: 'string' },
   usePower: { power: 'number', id: 'string' },
   withdraw: { id: 'string', amount: 'number', resourceType: 'string' },
+  // Not in the private-server engine: official-game `Game.cpu.generatePixel()` / `Game.cpu.unlock()`
+  // global intents. Appended last so all upstream intents keep their sanitization order.
+  generatePixel: {},
+  unlockCpu: {},
+  activateAccess: {},
 } as const satisfies IntentSchemas;
 
 export type IntentTypes = typeof intentTypes;

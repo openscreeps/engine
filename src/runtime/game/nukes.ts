@@ -5,39 +5,49 @@
  * used under the ISC license (see THIRD_PARTY_NOTICES.md).
  */
 
-import { defineGameObjectProperties, exposeGlobal, finalizeClass } from './define.ts';
+import {
+  defineGameObjectProperties,
+  exposeGlobal,
+  gameConstructor,
+  type GameConstructor,
+} from './define.ts';
 import type { RawRoomObject } from './runtime-data.ts';
 import { RoomObject } from './room-object.ts';
 import { rawObject, scope } from './scope.ts';
 
-export class Nuke extends RoomObject {
-    declare id: string;
-    declare readonly timeToLand: number;
-    declare readonly launchRoomName: string | undefined;
+class NukeImpl extends RoomObject {
+  declare id: string;
+  declare readonly timeToLand: number;
+  declare readonly launchRoomName: string | undefined;
 
-    constructor(id: string) {
-        // upstream reads the data unconditionally, so a missing id throws
-        const data = rawObject(id);
-        super(data.x, data.y, data.room, data.effects);
-        this.id = id;
-    }
-
-    toString(): string {
-        return `[nuke #${this.id}]`;
-    }
+  override toString(): string {
+    return `[nuke #${this.id}]`;
+  }
 }
 
-finalizeClass(Nuke);
+export type Nuke = NukeImpl;
+
+/** Upstream `register.wrapFn(function(id) {…})`. */
+export const Nuke: GameConstructor<Nuke, [id?: unknown]> = gameConstructor(
+  NukeImpl,
+  function (this: Nuke, id?: unknown): void {
+    const data = rawObject(id);
+    RoomObject.call(this, data.x, data.y, data.room, data.effects);
+    // upstream stores the raw argument
+    this.id = id as string;
+  },
+  { name: '', length: 1 },
+);
 
 defineGameObjectProperties<Nuke, RawRoomObject>(Nuke.prototype, rawObject, {
-    // upstream `undefined - time` is NaN when `landTime` is missing
-    timeToLand: (o) => (o.landTime ?? NaN) - scope().runtimeData.time,
-    launchRoomName: (o) => o.launchRoomName,
+  // The cast lets TypeScript emit upstream's raw arithmetic (`undefined`/`null` coerce like JS).
+  timeToLand: (o) => (o.landTime as number) - scope().runtimeData.time,
+  launchRoomName: (o) => o.launchRoomName,
 });
 
 export function make(): void {
-    if (scope().globals.Nuke) {
-        return;
-    }
-    exposeGlobal('Nuke', Nuke);
+  if (scope().globals.Nuke) {
+    return;
+  }
+  exposeGlobal('Nuke', Nuke);
 }

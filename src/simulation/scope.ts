@@ -137,6 +137,7 @@ export interface GlobalScope {
   readonly env: SimulationEnv;
   gameTime: number;
   shardName: string;
+  restrictedShard: boolean;
   userIntents: GlobalUserIntents[];
   usersById: Record<string, UserDoc>;
   roomObjectsByType: Partial<Record<string, RoomObject[]>>;

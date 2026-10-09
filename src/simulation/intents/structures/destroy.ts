@@ -6,7 +6,7 @@
 import * as C from '../../../constants.ts';
 import type { RoomScope } from '../../scope.ts';
 import type { RoomObject } from '../../state.ts';
-import { lookup } from '../../support.ts';
+import { effectList, lookup } from '../../support.ts';
 import { destroyInvaderCore } from '../invader-core/destroy.ts';
 
 /** Removes a structure, leaving a ruin with its store unless destroyed by a nuke. */
@@ -51,7 +51,9 @@ export function destroyStructure(object: RoomObject, scope: RoomScope, attackTyp
     ruin.store = object.store || {};
 
     if (object.effects) {
-      const collapseEffect = object.effects.find((e) => e.effect === C.EFFECT_COLLAPSE_TIMER);
+      const collapseEffect = effectList(object.effects).find(
+        (e) => e.effect === C.EFFECT_COLLAPSE_TIMER,
+      );
       if (collapseEffect) {
         ruin.decayTime = Math.max(ruin.decayTime as number, collapseEffect.endTime);
       }

@@ -7,7 +7,7 @@ import * as C from '../../../constants.ts';
 import { calcResources } from '../../../utils/index.ts';
 import type { IntentArgs, RoomScope } from '../../scope.ts';
 import type { RoomObject, Store } from '../../state.ts';
-import { contains } from '../../support.ts';
+import { contains, effectList } from '../../support.ts';
 
 export function creepWithdraw(
   object: RoomObject,
@@ -60,7 +60,7 @@ export function creepWithdraw(
   }
 
   if (target.type === 'terminal') {
-    const effect = (target.effects ?? []).find((e) => e.power === C.PWR_DISRUPT_TERMINAL);
+    const effect = effectList(target.effects).find((e) => e.power === C.PWR_DISRUPT_TERMINAL);
     if (effect && effect.endTime > gameTime) {
       return;
     }

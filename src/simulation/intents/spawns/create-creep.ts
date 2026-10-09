@@ -7,7 +7,7 @@ import * as C from '../../../constants.ts';
 import { calcCreepCost, checkStructureAgainstController } from '../../../utils/index.ts';
 import type { IntentArgs, RoomScope } from '../../scope.ts';
 import type { BodyPart, RoomObject } from '../../state.ts';
-import { contains } from '../../support.ts';
+import { contains, effectList } from '../../support.ts';
 import { chargeEnergy } from './charge-energy.ts';
 
 export function spawnCreateCreep(
@@ -63,7 +63,7 @@ export function spawnCreateCreep(
 
   let needTime = C.CREEP_SPAWN_TIME * intentBody.length;
 
-  const effect = (spawn.effects ?? []).find((e) => e.power === C.PWR_OPERATE_SPAWN);
+  const effect = effectList(spawn.effects).find((e) => e.power === C.PWR_OPERATE_SPAWN);
   if (effect && effect.endTime > gameTime) {
     needTime = Math.ceil(
       needTime * (C.POWER_INFO[C.PWR_OPERATE_SPAWN].effect[(effect.level as number) - 1] as number),

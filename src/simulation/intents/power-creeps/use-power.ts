@@ -13,13 +13,12 @@ import {
 import type { IntentArgs, RoomScope } from '../../scope.ts';
 import type {
   ActionLog,
-  Effect,
   PowerCreepPowerInfo,
   RoomObject,
   Store,
   StoreCapacityResource,
 } from '../../state.ts';
-import { lookup } from '../../support.ts';
+import { lookup, effectList } from '../../support.ts';
 import { drop } from '../creeps/drop.ts';
 
 interface PowerInfo {
@@ -79,7 +78,7 @@ export function usePower(
     if (dist(object, target) > powerInfo.range) {
       return;
     }
-    const currentEffect = (target.effects || []).find((i) => i.power == power);
+    const currentEffect = effectList(target.effects).find((i) => i.power == power);
     if (
       currentEffect &&
       (currentEffect.level as number) > creepPower.level &&
@@ -89,14 +88,17 @@ export function usePower(
     }
   }
 
-  const effectValue = (powerInfo.effect as readonly number[])[creepPower.level - 1] as number;
   let applyEffectOnTarget = false;
   const t = target as RoomObject;
 
   switch (power) {
     case C.PWR_GENERATE_OPS: {
       bulk.update(object, {
-        store: { [C.RESOURCE_OPS]: (store[C.RESOURCE_OPS] || 0) + effectValue },
+        store: {
+          [C.RESOURCE_OPS]:
+            (store[C.RESOURCE_OPS] || 0) +
+            ((powerInfo.effect as readonly number[])[creepPower.level - 1] as number),
+        },
       });
       const sum = calcResources(object);
 
@@ -156,7 +158,7 @@ export function usePower(
       if (t.user && t.user != controller.user) {
         return;
       }
-      const effect = (t.effects || []).find((i) => i.power === C.PWR_DISRUPT_TERMINAL);
+      const effect = effectList(t.effects).find((i) => i.power === C.PWR_DISRUPT_TERMINAL);
       if (effect && effect.endTime > gameTime) {
         return;
       }
@@ -166,11 +168,14 @@ export function usePower(
       let energySent = 0;
       let capacitySum = 0;
       for (const extension of extensions) {
-        const value = extension.storeCapacityResource?.energy;
-        capacitySum += typeof value === 'number' ? value : 0;
+        // `_.sum` iteratee semantics: `+value || 0`
+        capacitySum += Number(extension.storeCapacityResource?.energy) || 0;
       }
       const targetStore = t.store;
-      const energyLimit = Math.min(targetStore.energy as number, effectValue * capacitySum);
+      const energyLimit = Math.min(
+        targetStore.energy as number,
+        ((powerInfo.effect as readonly number[])[creepPower.level - 1] as number) * capacitySum,
+      );
       extensions.sort(comparatorDistance(t));
       extensions.every((extension) => {
         const extStore = extension.store as Store;
@@ -257,7 +262,7 @@ export function usePower(
         x: object.x,
         y: object.y,
         user: object.user,
-        hits: effectValue,
+        hits: (powerInfo.effect as readonly number[])[creepPower.level - 1] as number,
         hitsMax: 0,
         nextDecayTime: gameTime + duration,
         effects: [
@@ -265,7 +270,7 @@ export function usePower(
             power: C.PWR_SHIELD,
             level: creepPower.level,
             endTime: gameTime + duration,
-          } as Effect,
+          },
         ],
       });
       break;

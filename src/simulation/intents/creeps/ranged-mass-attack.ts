@@ -7,6 +7,7 @@ import * as C from '../../../constants.ts';
 import { calcBodyEffectiveness } from '../../../utils/index.ts';
 import type { IntentArgs, RoomScope } from '../../scope.ts';
 import type { ActionLog, RoomObject } from '../../state.ts';
+import { effectList } from '../../support.ts';
 import { applyDamage } from '../damage.ts';
 
 const distanceRate: readonly number[] = [1, 1, 0.4, 0.1];
@@ -69,7 +70,7 @@ export function creepRangedMassAttack(
       continue;
     }
     if (
-      (target.effects ?? []).some(
+      effectList(target.effects).some(
         (e) =>
           e.endTime >= gameTime &&
           (e.power === C.PWR_FORTIFY || e.effect === C.EFFECT_INVULNERABILITY),

@@ -6,6 +6,7 @@
 import * as C from '../../../constants.ts';
 import type { IntentArgs, RoomScope } from '../../scope.ts';
 import type { ActionLog, RoomObject } from '../../state.ts';
+import { effectList } from '../../support.ts';
 
 export function invaderCoreUpgradeController(
   object: RoomObject,
@@ -30,7 +31,7 @@ export function invaderCoreUpgradeController(
     return;
   }
 
-  const effect = (target.effects ?? []).find((e) => e.effect === C.EFFECT_INVULNERABILITY);
+  const effect = effectList(target.effects).find((e) => e.effect === C.EFFECT_INVULNERABILITY);
   if (effect) {
     effect.endTime = gameTime + C.INVADER_CORE_CONTROLLER_DOWNGRADE;
   } else {

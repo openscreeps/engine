@@ -7,7 +7,7 @@ import * as C from '../../../constants.ts';
 import { calcRoomsDistance, calcTerminalEnergyCost } from '../../../utils/index.ts';
 import type { IntentArgs, RoomScope } from '../../scope.ts';
 import type { RoomObject } from '../../state.ts';
-import { contains, powerEffect } from '../../support.ts';
+import { contains, powerEffect, effectList } from '../../support.ts';
 
 export function terminalSend(
   object: RoomObject,
@@ -34,7 +34,7 @@ export function terminalSend(
   const range = calcRoomsDistance(object.room, targetRoomName, true, env.worldSize);
   let cost = calcTerminalEnergyCost(amount, range);
 
-  const effect = object.effects?.find((e) => e.power === C.PWR_OPERATE_TERMINAL);
+  const effect = effectList(object.effects).find((e) => e.power === C.PWR_OPERATE_TERMINAL);
   if (effect && effect.endTime >= gameTime) {
     cost = Math.ceil(cost * powerEffect(C.PWR_OPERATE_TERMINAL, effect.level));
   }

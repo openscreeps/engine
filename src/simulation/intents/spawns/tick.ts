@@ -7,7 +7,7 @@ import * as C from '../../../constants.ts';
 import { comparatorDistance } from '../../../utils/index.ts';
 import type { RoomScope } from '../../scope.ts';
 import type { RoomObject, SpawningInfo, Store } from '../../state.ts';
-import { lookup } from '../../support.ts';
+import { lookup, effectList } from '../../support.ts';
 import { bornCreep } from './born-creep.ts';
 
 export function tickSpawn(object: RoomObject, scope: RoomScope): void {
@@ -17,7 +17,7 @@ export function tickSpawn(object: RoomObject, scope: RoomScope): void {
 
   if (object.spawning) {
     const spawning = object.spawning as SpawningInfo;
-    const effect = (object.effects ?? []).find((e) => e.power === C.PWR_DISRUPT_SPAWN);
+    const effect = effectList(object.effects).find((e) => e.power === C.PWR_DISRUPT_SPAWN);
     if (effect && effect.endTime > gameTime) {
       bulk.update(object, { spawning: { spawnTime: 1 + spawning.spawnTime } });
     } else {

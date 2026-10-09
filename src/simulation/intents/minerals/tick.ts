@@ -7,7 +7,7 @@ import * as C from '../../../constants.ts';
 import type { BulkPatch } from '../../bulk.ts';
 import type { RoomScope } from '../../scope.ts';
 import type { RoomObject } from '../../state.ts';
-import { lookup, powerEffect, powerInfo, type PowerInfoEntry } from '../../support.ts';
+import { lookup, powerEffect, powerInfo, type PowerInfoEntry, effectList } from '../../support.ts';
 
 export function tickMineral(object: RoomObject, scope: RoomScope): void {
   const { bulk, gameTime, env } = scope;
@@ -45,7 +45,7 @@ export function tickMineral(object: RoomObject, scope: RoomScope): void {
     }
   }
 
-  const effect = object.effects?.find((e) => e.power === C.PWR_REGEN_MINERAL);
+  const effect = effectList(object.effects).find((e) => e.power === C.PWR_REGEN_MINERAL);
   if (effect && effect.endTime > gameTime && !object.nextRegenerationTime && object.mineralAmount) {
     const info = powerInfo(C.PWR_REGEN_MINERAL) as PowerInfoEntry;
     if ((effect.endTime - gameTime - 1) % (info.period as number) === 0) {
