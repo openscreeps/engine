@@ -8,41 +8,45 @@ import type { IntentArgs, RoomScope } from '../../scope.ts';
 import type { ActionLog, RoomObject } from '../../state.ts';
 
 export function invaderCoreReserveController(
-    object: RoomObject,
-    intent: IntentArgs<'reserveController'>,
-    scope: RoomScope,
+  object: RoomObject,
+  intent: IntentArgs<'reserveController'>,
+  scope: RoomScope,
 ): void {
-    const { roomObjects, bulk, gameTime, eventLog } = scope;
+  const { roomObjects, bulk, gameTime, eventLog } = scope;
 
-    if (object.type !== 'invaderCore') {
-        return;
-    }
+  if (object.type !== 'invaderCore') {
+    return;
+  }
 
-    const target = roomObjects[intent.id as string];
-    if (!target || target.type !== 'controller') {
-        return;
-    }
+  const target = roomObjects[intent.id as string];
+  if (!target || target.type !== 'controller') {
+    return;
+  }
 
-    if (target.user || (target.reservation && target.reservation.user !== object.user)) {
-        return;
-    }
+  if (target.user || (target.reservation && target.reservation.user !== object.user)) {
+    return;
+  }
 
-    if (!target.reservation) {
-        target.reservation = {
-            user: object.user as string,
-            endTime: gameTime + 1,
-        };
-    }
+  if (!target.reservation) {
+    target.reservation = {
+      user: object.user as string,
+      endTime: gameTime + 1,
+    };
+  }
 
-    const effect = C.INVADER_CORE_CONTROLLER_POWER * C.CONTROLLER_RESERVE;
-    if (target.reservation.endTime + effect > gameTime + C.CONTROLLER_RESERVE_MAX) {
-        return;
-    }
+  const effect = C.INVADER_CORE_CONTROLLER_POWER * C.CONTROLLER_RESERVE;
+  if (target.reservation.endTime + effect > gameTime + C.CONTROLLER_RESERVE_MAX) {
+    return;
+  }
 
-    (object.actionLog as ActionLog).reserveController = { x: target.x, y: target.y };
+  (object.actionLog as ActionLog).reserveController = { x: target.x, y: target.y };
 
-    target.reservation.endTime += effect;
-    bulk.update(target, { reservation: target.reservation });
+  target.reservation.endTime += effect;
+  bulk.update(target, { reservation: target.reservation });
 
-    eventLog.push({ event: C.EVENT_RESERVE_CONTROLLER, objectId: object._id, data: { amount: effect } });
+  eventLog.push({
+    event: C.EVENT_RESERVE_CONTROLLER,
+    objectId: object._id,
+    data: { amount: effect },
+  });
 }

@@ -9,41 +9,51 @@ import type { IntentArgs, RoomScope } from '../../scope.ts';
 import type { RoomObject } from '../../state.ts';
 import { applyDamage } from '../damage.ts';
 
-export function creepAttack(object: RoomObject, intent: IntentArgs<'attack'>, scope: RoomScope): void {
-    const { roomObjects, roomController, gameTime } = scope;
+export function creepAttack(
+  object: RoomObject,
+  intent: IntentArgs<'attack'>,
+  scope: RoomScope,
+): void {
+  const { roomObjects, roomController, gameTime } = scope;
 
-    if (object.type !== 'creep') {
-        return;
-    }
-    if (object.spawning) {
-        return;
-    }
+  if (object.type !== 'creep') {
+    return;
+  }
+  if (object.spawning) {
+    return;
+  }
 
-    let target = intent.id === undefined ? undefined : roomObjects[intent.id];
-    if (!target || target === object) {
-        return;
-    }
-    if (Math.abs(target.x - object.x) > 1 || Math.abs(target.y - object.y) > 1) {
-        return;
-    }
-    if (target.type === 'creep' && target.spawning) {
-        return;
-    }
-    if (!target.hits) {
-        return;
-    }
-    if (roomController && roomController.user !== object.user && (roomController.safeMode as number) > gameTime) {
-        return;
-    }
-    const { x, y } = target;
-    const rampart = Object.values(roomObjects).find((i) => i.type === 'rampart' && i.x === x && i.y === y);
-    if (rampart) {
-        target = rampart;
-    }
+  let target = intent.id === undefined ? undefined : roomObjects[intent.id];
+  if (!target || target === object) {
+    return;
+  }
+  if (Math.abs(target.x - object.x) > 1 || Math.abs(target.y - object.y) > 1) {
+    return;
+  }
+  if (target.type === 'creep' && target.spawning) {
+    return;
+  }
+  if (!target.hits) {
+    return;
+  }
+  if (
+    roomController &&
+    roomController.user !== object.user &&
+    (roomController.safeMode as number) > gameTime
+  ) {
+    return;
+  }
+  const { x, y } = target;
+  const rampart = Object.values(roomObjects).find(
+    (i) => i.type === 'rampart' && i.x === x && i.y === y,
+  );
+  if (rampart) {
+    target = rampart;
+  }
 
-    const attackPower = calcBodyEffectiveness(object.body ?? [], C.ATTACK, 'attack', C.ATTACK_POWER);
+  const attackPower = calcBodyEffectiveness(object.body ?? [], C.ATTACK, 'attack', C.ATTACK_POWER);
 
-    applyDamage(object, target, attackPower, C.EVENT_ATTACK_TYPE_MELEE, scope);
+  applyDamage(object, target, attackPower, C.EVENT_ATTACK_TYPE_MELEE, scope);
 
-    object._attack = true;
+  object._attack = true;
 }

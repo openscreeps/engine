@@ -9,17 +9,17 @@ import type { RoomObject } from '../../state.ts';
 import { lookup } from '../../support.ts';
 
 export function tickTerminal(object: RoomObject, scope: RoomScope): void {
-    const { bulk, roomController } = scope;
+  const { bulk, roomController } = scope;
 
-    if (roomController) {
-        const storeCapacity =
-            (roomController.level as number) > 0 &&
-            roomController.user == object.user &&
-            lookup<number>(C.CONTROLLER_STRUCTURES.terminal, roomController.level)
-                ? C.TERMINAL_CAPACITY
-                : 0;
-        if (storeCapacity != object.storeCapacity) {
-            bulk.update(object, { storeCapacity });
-        }
+  if (roomController) {
+    const storeCapacity =
+      (roomController.level as number) > 0 &&
+      roomController.user == object.user &&
+      lookup<number>(C.CONTROLLER_STRUCTURES.terminal, roomController.level)
+        ? C.TERMINAL_CAPACITY
+        : 0;
+    if (storeCapacity != object.storeCapacity) {
+      bulk.update(object, { storeCapacity });
     }
+  }
 }

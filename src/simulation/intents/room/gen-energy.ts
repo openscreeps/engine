@@ -9,28 +9,30 @@ import type { GenEnergyIntent, RoomScope } from '../../scope.ts';
 import { contains } from '../../support.ts';
 
 export function genEnergy(userId: string, intent: GenEnergyIntent, scope: RoomScope): void {
-    const { roomObjects, roomTerrain, bulk, env } = scope;
+  const { roomObjects, roomTerrain, bulk, env } = scope;
 
-    if (userId != '3') {
-        return;
-    }
+  if (userId != '3') {
+    return;
+  }
 
-    let x: number;
-    let y: number;
+  let x: number;
+  let y: number;
 
-    do {
-        x = Math.floor(env.random() * 48) + 1;
-        y = Math.floor(env.random() * 48) + 1;
-    } while (
-        Object.values(roomObjects).some((i) => contains(C.OBSTACLE_OBJECT_TYPES, i.type) && i.x == x && i.y == y) ||
-        checkTerrain(roomTerrain, x, y, C.TERRAIN_MASK_WALL)
-    );
+  do {
+    x = Math.floor(env.random() * 48) + 1;
+    y = Math.floor(env.random() * 48) + 1;
+  } while (
+    Object.values(roomObjects).some(
+      (i) => contains(C.OBSTACLE_OBJECT_TYPES, i.type) && i.x == x && i.y == y,
+    ) ||
+    checkTerrain(roomTerrain, x, y, C.TERRAIN_MASK_WALL)
+  );
 
-    bulk.insert({
-        x,
-        y,
-        type: 'energy',
-        energy: 300,
-        room: intent.roomName as string,
-    });
+  bulk.insert({
+    x,
+    y,
+    type: 'energy',
+    energy: 300,
+    room: intent.roomName as string,
+  });
 }

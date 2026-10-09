@@ -8,17 +8,24 @@ import type { RoomObject } from '../../state.ts';
 import { createEnergy } from '../create-energy.ts';
 
 export function tickRuin(object: RoomObject, scope: RoomScope): void {
-    const { roomObjects, bulk, gameTime } = scope;
+  const { roomObjects, bulk, gameTime } = scope;
 
-    if (!object.decayTime || gameTime >= (object.decayTime as number) - 1) {
-        const store = object.store;
-        if (store) {
-            for (const resourceType of Object.keys(store)) {
-                createEnergy(object.x, object.y, object.room, store[resourceType] as number, resourceType, scope);
-            }
-        }
-
-        bulk.remove(object._id);
-        delete roomObjects[object._id];
+  if (!object.decayTime || gameTime >= (object.decayTime as number) - 1) {
+    const store = object.store;
+    if (store) {
+      for (const resourceType of Object.keys(store)) {
+        createEnergy(
+          object.x,
+          object.y,
+          object.room,
+          store[resourceType] as number,
+          resourceType,
+          scope,
+        );
+      }
     }
+
+    bulk.remove(object._id);
+    Reflect.deleteProperty(roomObjects, object._id);
+  }
 }

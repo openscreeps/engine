@@ -7,22 +7,27 @@ import type { IntentArgs, RoomScope } from '../../scope.ts';
 import type { RoomObject, SpawningInfo } from '../../state.ts';
 
 export function spawnSetSpawnDirections(
-    spawn: RoomObject,
-    intent: IntentArgs<'setSpawnDirections'>,
-    scope: RoomScope,
+  spawn: RoomObject,
+  intent: IntentArgs<'setSpawnDirections'>,
+  scope: RoomScope,
 ): void {
-    const { bulk } = scope;
-    if (spawn.type !== 'spawn' || !spawn.spawning) return;
-    let directions = intent.directions;
-    if (Array.isArray(directions) && directions.length > 0) {
-        // convert directions to numbers, eliminate duplicates
-        directions = [...new Set(directions.map((e) => Number(e)))];
-        // bail if any numbers are out of bounds or non-integers
-        if (!directions.some((direction) => direction < 1 || direction > 8 || direction !== (direction | 0))) {
-            const spawning: SpawningInfo = { ...(spawn.spawning as SpawningInfo) };
-            spawning.directions = directions;
-            bulk.update(spawn, { spawning: null });
-            bulk.update(spawn, { spawning });
-        }
+  const { bulk } = scope;
+  if (spawn.type !== 'spawn' || !spawn.spawning) return;
+  // user-supplied payload: may hold non-number entries at runtime
+  const rawDirections: unknown = intent.directions;
+  if (Array.isArray(rawDirections) && rawDirections.length > 0) {
+    // convert directions to numbers, eliminate duplicates
+    const directions = [...new Set(rawDirections.map((e) => Number(e)))];
+    // bail if any numbers are out of bounds or non-integers
+    if (
+      !directions.some(
+        (direction) => direction < 1 || direction > 8 || direction !== (direction | 0),
+      )
+    ) {
+      const spawning: SpawningInfo = { ...(spawn.spawning as SpawningInfo) };
+      spawning.directions = directions;
+      bulk.update(spawn, { spawning: null });
+      bulk.update(spawn, { spawning });
     }
+  }
 }

@@ -9,25 +9,25 @@ import type { RoomScope } from '../../scope.ts';
 import type { ResourceType, RoomObject } from '../../state.ts';
 
 export function tickEnergy(object: RoomObject, scope: RoomScope): void {
-    const { roomObjects, bulk } = scope;
+  const { roomObjects, bulk } = scope;
 
-    if (object.type != 'energy') return;
+  if (object.type != 'energy') return;
 
-    const resourceType = (object.resourceType || 'energy') as ResourceType;
+  const resourceType = (object.resourceType || 'energy') as ResourceType;
 
-    const current = object[resourceType] as number;
-    const amount = current - Math.ceil(current / C.ENERGY_DECAY);
-    object[resourceType] = amount;
+  const current = object[resourceType] as number;
+  const amount = current - Math.ceil(current / C.ENERGY_DECAY);
+  object[resourceType] = amount;
 
-    if (amount <= 0 || !amount) {
-        if (Number.isNaN(amount)) {
-            console.log('Energy NaN: dropped');
-        }
-        bulk.remove(object._id);
-        delete roomObjects[object._id];
-    } else {
-        const patch: BulkPatch<RoomObject> = {};
-        patch[resourceType] = amount;
-        bulk.update(object, patch);
+  if (amount <= 0 || !amount) {
+    if (Number.isNaN(amount)) {
+      console.log('Energy NaN: dropped');
     }
+    bulk.remove(object._id);
+    Reflect.deleteProperty(roomObjects, object._id);
+  } else {
+    const patch: BulkPatch<RoomObject> = {};
+    patch[resourceType] = amount;
+    bulk.update(object, patch);
+  }
 }

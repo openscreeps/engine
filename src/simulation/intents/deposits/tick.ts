@@ -7,15 +7,15 @@ import type { RoomScope } from '../../scope.ts';
 import type { RoomObject } from '../../state.ts';
 
 export function tickDeposit(object: RoomObject, scope: RoomScope): void {
-    const { roomObjects, bulk, gameTime } = scope;
-    if (object._cooldown) {
-        bulk.update(object, {
-            cooldownTime: gameTime + object._cooldown,
-        });
-    }
+  const { roomObjects, bulk, gameTime } = scope;
+  if (object._cooldown) {
+    bulk.update(object, {
+      cooldownTime: gameTime + object._cooldown,
+    });
+  }
 
-    if (object.decayTime && gameTime > (object.decayTime as number)) {
-        bulk.remove(object._id);
-        delete roomObjects[object._id];
-    }
+  if (object.decayTime && gameTime > (object.decayTime as number)) {
+    bulk.remove(object._id);
+    Reflect.deleteProperty(roomObjects, object._id);
+  }
 }

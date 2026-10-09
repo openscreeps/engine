@@ -7,18 +7,22 @@ import { dist } from '../../../utils/index.ts';
 import type { IntentArgs, RoomScope } from '../../scope.ts';
 import type { ActionLog, RoomObject } from '../../state.ts';
 
-export function enableRoom(object: RoomObject, intent: IntentArgs<'enableRoom'>, scope: RoomScope): void {
-    const { roomObjects, bulk, gameTime } = scope;
-    const target = roomObjects[intent.id as string];
-    if (!target || target.type != 'controller') {
-        return;
-    }
-    if (target.user != object.user && (target.safeMode as number) > gameTime) {
-        return;
-    }
-    if (dist(object, target) > 1) {
-        return;
-    }
-    bulk.update(target, { isPowerEnabled: true });
-    (object.actionLog as ActionLog).attack = { x: target.x, y: target.y };
+export function enableRoom(
+  object: RoomObject,
+  intent: IntentArgs<'enableRoom'>,
+  scope: RoomScope,
+): void {
+  const { roomObjects, bulk, gameTime } = scope;
+  const target = roomObjects[intent.id as string];
+  if (!target || target.type != 'controller') {
+    return;
+  }
+  if (target.user != object.user && (target.safeMode as number) > gameTime) {
+    return;
+  }
+  if (dist(object, target) > 1) {
+    return;
+  }
+  bulk.update(target, { isPowerEnabled: true });
+  (object.actionLog as ActionLog).attack = { x: target.x, y: target.y };
 }

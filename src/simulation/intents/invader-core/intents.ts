@@ -11,14 +11,21 @@ import { invaderCoreReserveController } from './reserve-controller.ts';
 import { invaderCoreTransfer } from './transfer.ts';
 import { invaderCoreUpgradeController } from './upgrade-controller.ts';
 
-export function processInvaderCoreIntents(object: RoomObject, objectIntents: ObjectIntentSet, scope: RoomScope): void {
-    if (objectIntents.transfer) invaderCoreTransfer(object, objectIntents.transfer, scope);
+export function processInvaderCoreIntents(
+  object: RoomObject,
+  objectIntents: ObjectIntentSet,
+  scope: RoomScope,
+): void {
+  if (objectIntents.transfer) invaderCoreTransfer(object, objectIntents.transfer, scope);
 
-    if (objectIntents.createCreep) invaderCoreCreateCreep(object, objectIntents.createCreep, scope);
+  if (objectIntents.createCreep) invaderCoreCreateCreep(object, objectIntents.createCreep, scope);
 
-    if (objectIntents.reserveController) invaderCoreReserveController(object, objectIntents.reserveController, scope);
+  if (objectIntents.reserveController)
+    invaderCoreReserveController(object, objectIntents.reserveController, scope);
 
-    if (objectIntents.attackController) invaderCoreAttackController(object, objectIntents.attackController, scope);
+  if (objectIntents.attackController)
+    invaderCoreAttackController(object, objectIntents.attackController, scope);
 
-    if (objectIntents.upgradeController) invaderCoreUpgradeController(object, objectIntents.upgradeController, scope);
+  if (objectIntents.upgradeController)
+    invaderCoreUpgradeController(object, objectIntents.upgradeController, scope);
 }

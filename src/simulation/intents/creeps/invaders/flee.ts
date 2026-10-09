@@ -10,16 +10,16 @@ import type { InvaderContext } from './pretick.ts';
 
 /** Steps away from hostiles closer than `range`; true when a move intent was issued. */
 export function flee(creep: RoomObject, range: number, context: InvaderContext): boolean {
-    const { scope, intents, hostiles } = context;
+  const { scope, intents, hostiles } = context;
 
-    const nearCreeps = hostiles.filter((c) => dist(creep, c) < range);
-    if (nearCreeps.length > 0) {
-        const direction = fleeFrom(creep, nearCreeps, range, {}, scope);
-        if (direction) {
-            intents.set(creep._id, 'move', { direction });
-            return true;
-        }
+  const nearCreeps = hostiles.filter((c) => dist(creep, c) < range);
+  if (nearCreeps.length > 0) {
+    const direction = fleeFrom(creep, nearCreeps, range, {}, scope);
+    if (direction) {
+      intents.set(creep._id, 'move', { direction });
+      return true;
     }
+  }
 
-    return false;
+  return false;
 }

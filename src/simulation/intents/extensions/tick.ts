@@ -9,18 +9,18 @@ import type { RoomObject } from '../../state.ts';
 import { lookup } from '../../support.ts';
 
 export function tickExtension(object: RoomObject, scope: RoomScope): void {
-    const { bulk, roomController } = scope;
+  const { bulk, roomController } = scope;
 
-    if (object.type != 'extension') return;
+  if (object.type != 'extension') return;
 
-    if (roomController) {
-        const storeCapacity = lookup<number>(C.EXTENSION_ENERGY_CAPACITY, roomController.level) || 0;
-        if (
-            !object.storeCapacityResource ||
-            !object.storeCapacityResource.energy ||
-            storeCapacity != object.storeCapacityResource.energy
-        ) {
-            bulk.update(object, { storeCapacityResource: { energy: storeCapacity } });
-        }
+  if (roomController) {
+    const storeCapacity = lookup<number>(C.EXTENSION_ENERGY_CAPACITY, roomController.level) || 0;
+    if (
+      !object.storeCapacityResource ||
+      !object.storeCapacityResource.energy ||
+      storeCapacity != object.storeCapacityResource.energy
+    ) {
+      bulk.update(object, { storeCapacityResource: { energy: storeCapacity } });
     }
+  }
 }

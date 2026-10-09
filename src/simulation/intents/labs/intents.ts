@@ -10,11 +10,16 @@ import { labReverseReaction } from './reverse-reaction.ts';
 import { labRunReaction } from './run-reaction.ts';
 import { labUnboostCreep } from './unboost-creep.ts';
 
-export function processLabIntents(object: RoomObject, objectIntents: ObjectIntentSet, scope: RoomScope): void {
-    if (objectIntents.boostCreep) labBoostCreep(object, objectIntents.boostCreep, scope);
+export function processLabIntents(
+  object: RoomObject,
+  objectIntents: ObjectIntentSet,
+  scope: RoomScope,
+): void {
+  if (objectIntents.boostCreep) labBoostCreep(object, objectIntents.boostCreep, scope);
 
-    if (objectIntents.unboostCreep) labUnboostCreep(object, objectIntents.unboostCreep, scope);
+  if (objectIntents.unboostCreep) labUnboostCreep(object, objectIntents.unboostCreep, scope);
 
-    if (objectIntents.runReaction) labRunReaction(object, objectIntents.runReaction, scope);
-    else if (objectIntents.reverseReaction) labReverseReaction(object, objectIntents.reverseReaction, scope);
+  if (objectIntents.runReaction) labRunReaction(object, objectIntents.runReaction, scope);
+  else if (objectIntents.reverseReaction)
+    labReverseReaction(object, objectIntents.reverseReaction, scope);
 }

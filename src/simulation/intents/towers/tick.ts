@@ -8,13 +8,13 @@ import type { RoomObject } from '../../state.ts';
 import { isEqual } from '../../support.ts';
 
 export function tickTower(object: RoomObject, scope: RoomScope): void {
-    const { bulk } = scope;
+  const { bulk } = scope;
 
-    if (object.type != 'tower') return;
+  if (object.type != 'tower') return;
 
-    if (!isEqual(object._actionLog, object.actionLog)) {
-        bulk.update(object, {
-            actionLog: object.actionLog,
-        });
-    }
+  if (!isEqual(object._actionLog, object.actionLog)) {
+    bulk.update(object, {
+      actionLog: object.actionLog,
+    });
+  }
 }

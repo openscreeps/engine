@@ -11,14 +11,19 @@ import { spawnRecycleCreep } from './recycle-creep.ts';
 import { spawnRenewCreep } from './renew-creep.ts';
 import { spawnSetSpawnDirections } from './set-spawn-directions.ts';
 
-export function processSpawnIntents(object: RoomObject, intents: ObjectIntentSet, scope: RoomScope): void {
-    if (intents.createCreep) spawnCreateCreep(object, intents.createCreep, scope);
+export function processSpawnIntents(
+  object: RoomObject,
+  intents: ObjectIntentSet,
+  scope: RoomScope,
+): void {
+  if (intents.createCreep) spawnCreateCreep(object, intents.createCreep, scope);
 
-    if (intents.renewCreep) spawnRenewCreep(object, intents.renewCreep, scope);
+  if (intents.renewCreep) spawnRenewCreep(object, intents.renewCreep, scope);
 
-    if (intents.recycleCreep) spawnRecycleCreep(object, intents.recycleCreep, scope);
+  if (intents.recycleCreep) spawnRecycleCreep(object, intents.recycleCreep, scope);
 
-    if (intents.setSpawnDirections) spawnSetSpawnDirections(object, intents.setSpawnDirections, scope);
+  if (intents.setSpawnDirections)
+    spawnSetSpawnDirections(object, intents.setSpawnDirections, scope);
 
-    if (intents.cancelSpawning) spawnCancelSpawning(object, intents.cancelSpawning, scope);
+  if (intents.cancelSpawning) spawnCancelSpawning(object, intents.cancelSpawning, scope);
 }

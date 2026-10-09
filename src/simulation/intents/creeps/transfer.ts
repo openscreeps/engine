@@ -6,71 +6,86 @@
 import * as C from '../../../constants.ts';
 import { calcResources, capacityForResource } from '../../../utils/index.ts';
 import type { IntentArgs, RoomScope } from '../../scope.ts';
-import type { RoomObject, Store, StoreCapacityResource } from '../../state.ts';
+import type { ResourceType, RoomObject, Store, StoreCapacityResource } from '../../state.ts';
 import { contains } from '../../support.ts';
 
-export function creepTransfer(object: RoomObject, intent: IntentArgs<'transfer'>, scope: RoomScope): void {
-    const { roomObjects, bulk, eventLog } = scope;
+function isResourceType(value: string | undefined): value is ResourceType {
+  return value !== undefined && contains(C.RESOURCES_ALL, value);
+}
 
-    const resourceType = intent.resourceType;
-    if (resourceType === undefined || !contains(C.RESOURCES_ALL, resourceType)) {
-        return;
-    }
-    const intentAmount = intent.amount as number;
-    if (object.spawning || !object.store || !((object.store[resourceType] as number) >= intentAmount) || intentAmount < 0) {
-        return;
-    }
+export function creepTransfer(
+  object: RoomObject,
+  intent: IntentArgs<'transfer'>,
+  scope: RoomScope,
+): void {
+  const { roomObjects, bulk, eventLog } = scope;
 
-    const target = roomObjects[intent.id as string];
-    if (!target || (target.type === 'creep' && target.spawning)) {
-        return;
-    }
-    if (Math.abs(target.x - object.x) > 1 || Math.abs(target.y - object.y) > 1) {
-        return;
-    }
+  const resourceType = intent.resourceType;
+  if (!isResourceType(resourceType)) {
+    return;
+  }
+  const intentAmount = intent.amount as number;
+  if (
+    object.spawning ||
+    !object.store ||
+    !((object.store[resourceType] as number) >= intentAmount) ||
+    intentAmount < 0
+  ) {
+    return;
+  }
 
-    const targetCapacity = capacityForResource(target, resourceType);
+  const target = roomObjects[intent.id as string];
+  if (!target || (target.type === 'creep' && target.spawning)) {
+    return;
+  }
+  if (Math.abs(target.x - object.x) > 1 || Math.abs(target.y - object.y) > 1) {
+    return;
+  }
 
-    if (!targetCapacity) {
-        return;
-    }
+  const targetCapacity = capacityForResource(target, resourceType);
 
-    let amount = intentAmount;
+  if (!targetCapacity) {
+    return;
+  }
 
-    const targetStore = target.store as Store;
-    const storedAmount = (target.storeCapacityResource ? targetStore[resourceType] : calcResources(target)) as number;
+  let amount = intentAmount;
 
-    if (storedAmount >= targetCapacity) {
-        return;
-    }
-    if (storedAmount + amount > targetCapacity) {
-        amount = targetCapacity - storedAmount;
-    }
+  const targetStore = target.store as Store;
+  const storedAmount = (
+    target.storeCapacityResource ? targetStore[resourceType] : calcResources(target)
+  ) as number;
 
-    if (!amount) {
-        return;
-    }
+  if (storedAmount >= targetCapacity) {
+    return;
+  }
+  if (storedAmount + amount > targetCapacity) {
+    amount = targetCapacity - storedAmount;
+  }
 
-    targetStore[resourceType] = (targetStore[resourceType] || 0) + amount;
-    bulk.update(target, { store: { [resourceType]: targetStore[resourceType] } });
+  if (!amount) {
+    return;
+  }
 
-    object.store[resourceType] = (object.store[resourceType] as number) - amount;
-    bulk.update(object, { store: { [resourceType]: object.store[resourceType] } });
+  targetStore[resourceType] = (targetStore[resourceType] || 0) + amount;
+  bulk.update(target, { store: { [resourceType]: targetStore[resourceType] } });
 
-    if (
-        target.type === 'lab' &&
-        resourceType !== 'energy' &&
-        !(target.storeCapacityResource as StoreCapacityResource)[resourceType]
-    ) {
-        bulk.update(target, {
-            storeCapacityResource: { [resourceType]: C.LAB_MINERAL_CAPACITY },
-            storeCapacity: null,
-        });
-    }
+  object.store[resourceType] = (object.store[resourceType] as number) - amount;
+  bulk.update(object, { store: { [resourceType]: object.store[resourceType] } });
 
-    eventLog.push({
-        event: C.EVENT_TRANSFER,
-        objectId: object._id,
-        data: { targetId: target._id, resourceType, amount },
+  if (
+    target.type === 'lab' &&
+    resourceType !== 'energy' &&
+    !(target.storeCapacityResource as StoreCapacityResource)[resourceType]
+  ) {
+    bulk.update(target, {
+      storeCapacityResource: { [resourceType]: C.LAB_MINERAL_CAPACITY },
+      storeCapacity: null,
     });
+  }
+
+  eventLog.push({
+    event: C.EVENT_TRANSFER,
+    objectId: object._id,
+    data: { targetId: target._id, resourceType, amount },
+  });
 }

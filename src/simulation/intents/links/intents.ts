@@ -7,6 +7,10 @@ import type { ObjectIntentSet, RoomScope } from '../../scope.ts';
 import type { RoomObject } from '../../state.ts';
 import { linkTransfer } from './transfer.ts';
 
-export function processLinkIntents(object: RoomObject, objectIntents: ObjectIntentSet, scope: RoomScope): void {
-    if (objectIntents.transfer) linkTransfer(object, objectIntents.transfer, scope);
+export function processLinkIntents(
+  object: RoomObject,
+  objectIntents: ObjectIntentSet,
+  scope: RoomScope,
+): void {
+  if (objectIntents.transfer) linkTransfer(object, objectIntents.transfer, scope);
 }

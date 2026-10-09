@@ -6,8 +6,12 @@
 import type { IntentArgs, RoomScope } from '../../scope.ts';
 import type { RoomObject } from '../../state.ts';
 
-export function setRampartPublic(object: RoomObject, intent: IntentArgs<'setPublic'>, scope: RoomScope): void {
-    scope.bulk.update(object, {
-        isPublic: !!intent.isPublic,
-    });
+export function setRampartPublic(
+  object: RoomObject,
+  intent: IntentArgs<'setPublic'>,
+  scope: RoomScope,
+): void {
+  scope.bulk.update(object, {
+    isPublic: !!intent.isPublic,
+  });
 }

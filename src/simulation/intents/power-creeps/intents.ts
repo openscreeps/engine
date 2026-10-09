@@ -15,14 +15,18 @@ import { renew } from './renew.ts';
 import { say } from './say.ts';
 import { usePower } from './use-power.ts';
 
-export function processPowerCreepIntents(object: RoomObject, intents: ObjectIntentSet, scope: RoomScope): void {
-    if (intents.move) creepMove(object, intents.move, scope);
-    if (intents.usePower) usePower(object, intents.usePower, scope);
-    if (intents.withdraw) creepWithdraw(object, intents.withdraw, scope);
-    if (intents.transfer) creepTransfer(object, intents.transfer, scope);
-    if (intents.say) say(object, intents.say);
-    if (intents.drop) drop(object, intents.drop, scope);
-    if (intents.pickup) creepPickup(object, intents.pickup, scope);
-    if (intents.enableRoom) enableRoom(object, intents.enableRoom, scope);
-    if (intents.renew) renew(object, intents.renew, scope);
+export function processPowerCreepIntents(
+  object: RoomObject,
+  intents: ObjectIntentSet,
+  scope: RoomScope,
+): void {
+  if (intents.move) creepMove(object, intents.move, scope);
+  if (intents.usePower) usePower(object, intents.usePower, scope);
+  if (intents.withdraw) creepWithdraw(object, intents.withdraw, scope);
+  if (intents.transfer) creepTransfer(object, intents.transfer, scope);
+  if (intents.say) say(object, intents.say);
+  if (intents.drop) drop(object, intents.drop, scope);
+  if (intents.pickup) creepPickup(object, intents.pickup, scope);
+  if (intents.enableRoom) enableRoom(object, intents.enableRoom, scope);
+  if (intents.renew) renew(object, intents.renew, scope);
 }

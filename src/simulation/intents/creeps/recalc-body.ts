@@ -9,21 +9,21 @@ import type { RoomObject } from '../../state.ts';
 
 /** Redistributes creep hits over body parts (last part first) and recalculates carry capacity. */
 export function recalcBody(object: RoomObject): void {
-    const body = object.body ?? [];
-    let hits = object.hits ?? 0;
+  const body = object.body ?? [];
+  let hits = object.hits ?? 0;
 
-    for (let i = body.length - 1; i >= 0; i--) {
-        const part = body[i];
-        if (!part) {
-            continue;
-        }
-        part._oldHits = part._oldHits || part.hits;
-        part.hits = hits > 100 ? 100 : hits;
-        hits -= 100;
-        if (hits < 0) hits = 0;
+  for (let i = body.length - 1; i >= 0; i--) {
+    const part = body[i];
+    if (!part) {
+      continue;
     }
+    part._oldHits = part._oldHits || part.hits;
+    part.hits = hits > 100 ? 100 : hits;
+    hits -= 100;
+    if (hits < 0) hits = 0;
+  }
 
-    if (!object.noCapacityRecalc) {
-        object.storeCapacity = calcBodyEffectiveness(body, C.CARRY, 'capacity', C.CARRY_CAPACITY, true);
-    }
+  if (!object.noCapacityRecalc) {
+    object.storeCapacity = calcBodyEffectiveness(body, C.CARRY, 'capacity', C.CARRY_CAPACITY, true);
+  }
 }

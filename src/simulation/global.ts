@@ -17,25 +17,30 @@ import type { RoomObject } from './state.ts';
  * `interRoom`; `accessibleRooms` are rooms with status `normal` that are already open.
  */
 export function processGlobal(
-    scope: GlobalScope,
-    interRoomCreeps: RoomObject[],
-    accessibleRooms: ReadonlySet<string>,
+  scope: GlobalScope,
+  interRoomCreeps: RoomObject[],
+  accessibleRooms: ReadonlySet<string>,
 ): void {
-    const activated = new Set<string>();
+  const activated = new Set<string>();
 
-    for (const creep of interRoomCreeps) {
-        const interRoom = creep.interRoom;
-        if (!interRoom || !accessibleRooms.has(interRoom.room)) {
-            continue;
-        }
-        if (!activated.has(interRoom.room)) {
-            scope.env.activateRoom(interRoom.room);
-        }
-        activated.add(interRoom.room);
-
-        scope.bulkObjects.update(creep, { room: interRoom.room, x: interRoom.x, y: interRoom.y, interRoom: null });
+  for (const creep of interRoomCreeps) {
+    const interRoom = creep.interRoom;
+    if (!interRoom || !accessibleRooms.has(interRoom.room)) {
+      continue;
     }
+    if (!activated.has(interRoom.room)) {
+      scope.env.activateRoom(interRoom.room);
+    }
+    activated.add(interRoom.room);
 
-    processPowerIntents(scope);
-    processMarketIntents(scope);
+    scope.bulkObjects.update(creep, {
+      room: interRoom.room,
+      x: interRoom.x,
+      y: interRoom.y,
+      interRoom: null,
+    });
+  }
+
+  processPowerIntents(scope);
+  processMarketIntents(scope);
 }

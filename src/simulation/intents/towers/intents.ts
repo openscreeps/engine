@@ -9,8 +9,12 @@ import { towerAttack } from './attack.ts';
 import { towerHeal } from './heal.ts';
 import { towerRepair } from './repair.ts';
 
-export function processTowerIntents(object: RoomObject, objectIntents: ObjectIntentSet, scope: RoomScope): void {
-    if (objectIntents.heal) towerHeal(object, objectIntents.heal, scope);
-    else if (objectIntents.repair) towerRepair(object, objectIntents.repair, scope);
-    else if (objectIntents.attack) towerAttack(object, objectIntents.attack, scope);
+export function processTowerIntents(
+  object: RoomObject,
+  objectIntents: ObjectIntentSet,
+  scope: RoomScope,
+): void {
+  if (objectIntents.heal) towerHeal(object, objectIntents.heal, scope);
+  else if (objectIntents.repair) towerRepair(object, objectIntents.repair, scope);
+  else if (objectIntents.attack) towerAttack(object, objectIntents.attack, scope);
 }

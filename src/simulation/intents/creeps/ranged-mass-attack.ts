@@ -12,65 +12,78 @@ import { applyDamage } from '../damage.ts';
 const distanceRate: readonly number[] = [1, 1, 0.4, 0.1];
 
 export function creepRangedMassAttack(
-    object: RoomObject,
-    _intent: IntentArgs<'rangedMassAttack'>,
-    scope: RoomScope,
+  object: RoomObject,
+  _intent: IntentArgs<'rangedMassAttack'>,
+  scope: RoomScope,
 ): void {
-    const { roomObjects, roomController, gameTime } = scope;
+  const { roomObjects, roomController, gameTime } = scope;
 
-    if (object.type !== 'creep') {
-        return;
+  if (object.type !== 'creep') {
+    return;
+  }
+  if (object.spawning) {
+    return;
+  }
+
+  const attackPower = calcBodyEffectiveness(
+    object.body ?? [],
+    C.RANGED_ATTACK,
+    'rangedMassAttack',
+    C.RANGED_ATTACK_POWER,
+  );
+
+  if (attackPower === 0) {
+    return;
+  }
+  if (
+    roomController &&
+    roomController.user !== object.user &&
+    (roomController.safeMode as number) > gameTime
+  ) {
+    return;
+  }
+
+  const targets = Object.values(roomObjects).filter(
+    (i) =>
+      (i.user !== undefined || i.type === 'powerBank') &&
+      i.user !== object.user &&
+      i.x >= object.x - 3 &&
+      i.x <= object.x + 3 &&
+      i.y >= object.y - 3 &&
+      i.y <= object.y + 3,
+  );
+
+  for (const target of targets) {
+    if (
+      target.type !== 'rampart' &&
+      Object.values(roomObjects).some(
+        (i) => i.type === 'rampart' && i.x === target.x && i.y === target.y,
+      )
+    ) {
+      continue;
     }
-    if (object.spawning) {
-        return;
+    if (!target.hits) {
+      continue;
+    }
+    if (target.type === 'creep' && target.spawning) {
+      continue;
+    }
+    if (
+      (target.effects ?? []).some(
+        (e) =>
+          e.endTime >= gameTime &&
+          (e.power === C.PWR_FORTIFY || e.effect === C.EFFECT_INVULNERABILITY),
+      )
+    ) {
+      continue;
     }
 
-    const attackPower = calcBodyEffectiveness(object.body ?? [], C.RANGED_ATTACK, 'rangedMassAttack', C.RANGED_ATTACK_POWER);
+    const distance = Math.max(Math.abs(object.x - target.x), Math.abs(object.y - target.y));
 
-    if (attackPower === 0) {
-        return;
-    }
-    if (roomController && roomController.user !== object.user && (roomController.safeMode as number) > gameTime) {
-        return;
-    }
+    const targetAttackPower = Math.round(attackPower * (distanceRate[distance] as number));
 
-    const targets = Object.values(roomObjects).filter(
-        (i) =>
-            (i.user !== undefined || i.type === 'powerBank') &&
-            i.user !== object.user &&
-            i.x >= object.x - 3 &&
-            i.x <= object.x + 3 &&
-            i.y >= object.y - 3 &&
-            i.y <= object.y + 3,
-    );
+    applyDamage(object, target, targetAttackPower, C.EVENT_ATTACK_TYPE_RANGED_MASS, scope);
+  }
 
-    for (const target of targets) {
-        if (
-            target.type !== 'rampart' &&
-            Object.values(roomObjects).some((i) => i.type === 'rampart' && i.x === target.x && i.y === target.y)
-        ) {
-            continue;
-        }
-        if (!target.hits) {
-            continue;
-        }
-        if (target.type === 'creep' && target.spawning) {
-            continue;
-        }
-        if (
-            (target.effects ?? []).some(
-                (e) => e.endTime >= gameTime && (e.power === C.PWR_FORTIFY || e.effect === C.EFFECT_INVULNERABILITY),
-            )
-        ) {
-            continue;
-        }
-
-        const distance = Math.max(Math.abs(object.x - target.x), Math.abs(object.y - target.y));
-
-        const targetAttackPower = Math.round(attackPower * (distanceRate[distance] as number));
-
-        applyDamage(object, target, targetAttackPower, C.EVENT_ATTACK_TYPE_RANGED_MASS, scope);
-    }
-
-    (object.actionLog as ActionLog).rangedMassAttack = {};
+  (object.actionLog as ActionLog).rangedMassAttack = {};
 }

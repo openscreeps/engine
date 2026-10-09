@@ -7,6 +7,10 @@ import type { ObjectIntentSet, RoomScope } from '../../scope.ts';
 import type { RoomObject } from '../../state.ts';
 import { processPower } from './process-power.ts';
 
-export function processPowerSpawnIntents(object: RoomObject, objectIntents: ObjectIntentSet, scope: RoomScope): void {
-    if (objectIntents.processPower) processPower(object, objectIntents.processPower, scope);
+export function processPowerSpawnIntents(
+  object: RoomObject,
+  objectIntents: ObjectIntentSet,
+  scope: RoomScope,
+): void {
+  if (objectIntents.processPower) processPower(object, objectIntents.processPower, scope);
 }

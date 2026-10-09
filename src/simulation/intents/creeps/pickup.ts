@@ -8,39 +8,43 @@ import type { BulkPatch } from '../../bulk.ts';
 import type { IntentArgs, RoomScope } from '../../scope.ts';
 import type { ResourceType, RoomObject } from '../../state.ts';
 
-export function creepPickup(object: RoomObject, intent: IntentArgs<'pickup'>, scope: RoomScope): void {
-    const { roomObjects, bulk } = scope;
+export function creepPickup(
+  object: RoomObject,
+  intent: IntentArgs<'pickup'>,
+  scope: RoomScope,
+): void {
+  const { roomObjects, bulk } = scope;
 
-    object.store = object.store || {};
-    const carry = calcResources(object);
+  object.store = object.store || {};
+  const carry = calcResources(object);
 
-    if (object.spawning || carry >= (object.storeCapacity as number)) {
-        return;
-    }
+  if (object.spawning || carry >= (object.storeCapacity as number)) {
+    return;
+  }
 
-    const target = roomObjects[intent.id as string];
-    if (!target || target.type !== 'energy') {
-        return;
-    }
-    if (Math.abs(target.x - object.x) > 1 || Math.abs(target.y - object.y) > 1) {
-        return;
-    }
+  const target = roomObjects[intent.id as string];
+  if (!target || target.type !== 'energy') {
+    return;
+  }
+  if (Math.abs(target.x - object.x) > 1 || Math.abs(target.y - object.y) > 1) {
+    return;
+  }
 
-    const resourceType = (target.resourceType || 'energy') as ResourceType;
+  const resourceType = (target.resourceType || 'energy') as ResourceType;
 
-    const amount = Math.min((object.storeCapacity as number) - carry, target[resourceType] as number);
+  const amount = Math.min((object.storeCapacity as number) - carry, target[resourceType] as number);
 
-    target[resourceType] = (target[resourceType] as number) - amount;
-    object.store[resourceType] = (object.store[resourceType] || 0) + amount;
+  target[resourceType] = (target[resourceType] as number) - amount;
+  object.store[resourceType] = (object.store[resourceType] || 0) + amount;
 
-    if (!target[resourceType]) {
-        bulk.remove(target._id);
-        delete roomObjects[target._id];
-    } else {
-        const patch: BulkPatch<RoomObject> = {};
-        patch[resourceType] = target[resourceType];
-        bulk.update(target, patch);
-    }
+  if (!target[resourceType]) {
+    bulk.remove(target._id);
+    Reflect.deleteProperty(roomObjects, target._id);
+  } else {
+    const patch: BulkPatch<RoomObject> = {};
+    patch[resourceType] = target[resourceType];
+    bulk.update(target, patch);
+  }
 
-    bulk.update(object, { store: { [resourceType]: object.store[resourceType] } });
+  bulk.update(object, { store: { [resourceType]: object.store[resourceType] } });
 }

@@ -9,22 +9,22 @@ import type { RoomObject } from '../../state.ts';
 import { isEqual, lookup } from '../../support.ts';
 
 export function tickFactory(object: RoomObject, scope: RoomScope): void {
-    const { roomController, bulk } = scope;
-    if (roomController) {
-        const storeCapacity =
-            (roomController.level as number) > 0 &&
-            roomController.user == object.user &&
-            lookup<number>(C.CONTROLLER_STRUCTURES.factory, roomController.level)
-                ? C.FACTORY_CAPACITY
-                : 0;
-        if (storeCapacity != object.storeCapacity) {
-            bulk.update(object, { storeCapacity });
-        }
+  const { roomController, bulk } = scope;
+  if (roomController) {
+    const storeCapacity =
+      (roomController.level as number) > 0 &&
+      roomController.user == object.user &&
+      lookup<number>(C.CONTROLLER_STRUCTURES.factory, roomController.level)
+        ? C.FACTORY_CAPACITY
+        : 0;
+    if (storeCapacity != object.storeCapacity) {
+      bulk.update(object, { storeCapacity });
     }
+  }
 
-    if (!isEqual(object._actionLog, object.actionLog)) {
-        bulk.update(object, {
-            actionLog: object.actionLog,
-        });
-    }
+  if (!isEqual(object._actionLog, object.actionLog)) {
+    bulk.update(object, {
+      actionLog: object.actionLog,
+    });
+  }
 }

@@ -8,10 +8,10 @@ import type { RoomObject } from '../../state.ts';
 import { isEqual } from '../../support.ts';
 
 export function tickLab(object: RoomObject, scope: RoomScope): void {
-    const { bulk } = scope;
-    if (!isEqual(object._actionLog, object.actionLog)) {
-        bulk.update(object, {
-            actionLog: object.actionLog,
-        });
-    }
+  const { bulk } = scope;
+  if (!isEqual(object._actionLog, object.actionLog)) {
+    bulk.update(object, {
+      actionLog: object.actionLog,
+    });
+  }
 }

@@ -10,18 +10,18 @@ import type { RoomObject } from '../../../state.ts';
 import type { InvaderContext } from './pretick.ts';
 
 export function shootAtWill(creep: RoomObject, context: InvaderContext): void {
-    if (!hasActiveBodyparts(creep, C.RANGED_ATTACK)) {
-        return;
-    }
+  if (!hasActiveBodyparts(creep, C.RANGED_ATTACK)) {
+    return;
+  }
 
-    const { intents, hostiles } = context;
+  const { intents, hostiles } = context;
 
-    const targets = hostiles.filter((c) => dist(creep, c) <= 3);
+  const targets = hostiles.filter((c) => dist(creep, c) <= 3);
 
-    if (targets.length === 0) {
-        return;
-    }
+  if (targets.length === 0) {
+    return;
+  }
 
-    const target = lodashMin(targets, (c) => c.hits) as Partial<RoomObject>;
-    intents.set(creep._id, 'rangedAttack', { id: target._id });
+  const target = lodashMin(targets, (c) => c.hits) as Partial<RoomObject>;
+  intents.set(creep._id, 'rangedAttack', { id: target._id });
 }
