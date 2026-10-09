@@ -86,6 +86,15 @@ function removeHidden(obj: unknown): void {
 export type IdGenerator = () => string;
 
 /**
+ * Storage write observer: `write` for every applied update or insert of a document (in storage
+ * application order, once per operation), `remove` for every removed document.
+ */
+export interface BulkWriteObserver {
+  write(id: string, doc: PlainRecord): void;
+  remove(id: string): void;
+}
+
+/**
  * Accumulates writes for one collection and applies them on `execute()`.
  *
  * In-memory objects passed by reference are patched immediately (like upstream), while the
@@ -94,16 +103,25 @@ export type IdGenerator = () => string;
 export class Bulk<T extends BulkDoc> {
   private readonly ops: Op[] = [];
   private opsCnt = 0;
-  private readonly updates = new Map<string, PlainRecord>();
+  /**
+   * Pending `$set`s keyed like the upstream plain object, so `execute()` emits them in its `for…in`
+   * order (integer-like ids first, ascending); the order is observable through storage write order.
+   */
+  private readonly updates: Record<string, PlainRecord> = Object.create(null) as Record<
+    string,
+    PlainRecord
+  >;
   private readonly inserts = new Map<string, PlainRecord>();
   private insertCnt = 0;
 
   private readonly collection: Record<string, T>;
   private readonly genId: IdGenerator;
+  private readonly observer: BulkWriteObserver | undefined;
 
-  constructor(collection: Record<string, T>, genId: IdGenerator) {
+  constructor(collection: Record<string, T>, genId: IdGenerator, observer?: BulkWriteObserver) {
     this.collection = collection;
     this.genId = genId;
+    this.observer = observer;
   }
 
   update(target: T | string | null | undefined, patch: BulkPatch<T>): void {
@@ -142,10 +160,10 @@ export class Bulk<T extends BulkDoc> {
     if (pendingInsert) {
       Object.assign(pendingInsert, data);
     } else {
-      let pending = this.updates.get(id);
+      let pending = this.updates[id];
       if (!pending) {
         pending = {};
-        this.updates.set(id, pending);
+        this.updates[id] = pending;
       }
       Object.assign(pending, data);
     }
@@ -223,8 +241,8 @@ export class Bulk<T extends BulkDoc> {
       return [];
     }
     const ops: Op[] = this.ops.slice();
-    for (const [id, set] of this.updates) {
-      ops.push({ op: 'update', id, update: { $set: set } });
+    for (const id of Object.keys(this.updates)) {
+      ops.push({ op: 'update', id, update: { $set: this.updates[id] as PlainRecord } });
     }
     for (const data of this.inserts.values()) {
       ops.push({ op: 'insert', data });
@@ -241,6 +259,7 @@ export class Bulk<T extends BulkDoc> {
             : undefined;
           if (doc) {
             updateDocument(doc, op.update);
+            this.observer?.write(op.id, doc);
           }
           break;
         }
@@ -252,10 +271,14 @@ export class Bulk<T extends BulkDoc> {
           const id = data._id as string;
           collection[id] = data;
           inserted.push(id);
+          this.observer?.write(id, data);
           break;
         }
         case 'remove': {
-          Reflect.deleteProperty(collection, op.id);
+          if (Object.prototype.hasOwnProperty.call(collection, op.id)) {
+            Reflect.deleteProperty(collection, op.id);
+            this.observer?.remove(op.id);
+          }
           break;
         }
       }

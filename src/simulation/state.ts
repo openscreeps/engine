@@ -498,6 +498,76 @@ export interface WorldState {
   idCounter: number;
   /** Seeded generator state used everywhere upstream calls `Math.random()`. */
   rngState: number;
+  /**
+   * Storage write sequence of each room object, reproducing the room processing order of the
+   * pinned server: its LokiJS `rooms.objects` index on `room` returns a room's objects most recently
+   * inserted or updated first. A room's objects are processed in descending sequence. Maintained by
+   * `Simulation` and `recordRoomObjectWrite`; do not edit directly.
+   */
+  roomObjectWriteSeq?: Record<string, number>;
+  /** Last assigned `roomObjectWriteSeq` value. */
+  writeSeq?: number;
+}
+
+/**
+ * Brings the write order up to date with `world.roomObjects`: drops entries of removed objects and
+ * numbers objects without an entry in key order, as if inserted in that order after all others.
+ */
+export function syncRoomObjectWriteOrder(world: WorldState): Record<string, number> {
+  const seqs = (world.roomObjectWriteSeq ??= {});
+  let seq = world.writeSeq ?? 0;
+  for (const id in seqs) {
+    if (Object.hasOwn(seqs, id) && !Object.hasOwn(world.roomObjects, id)) {
+      Reflect.deleteProperty(seqs, id);
+    }
+  }
+  for (const id in world.roomObjects) {
+    if (Object.hasOwn(world.roomObjects, id) && !Object.hasOwn(seqs, id)) {
+      seqs[id] = ++seq;
+    }
+  }
+  world.writeSeq = seq;
+  return seqs;
+}
+
+/** Makes `id` the most recently written room object. The caller has synchronized the write order. */
+export function bumpRoomObjectWrite(
+  world: WorldState,
+  seqs: Record<string, number>,
+  id: string,
+): void {
+  const seq = (world.writeSeq ?? 0) + 1;
+  world.writeSeq = seq;
+  seqs[id] = seq;
+}
+
+/**
+ * Records host writes of room objects (inserted or updated outside `Simulation`), in the given
+ * write order: each becomes the most recently written object of its room for processing order, like
+ * a storage insert/update on the pinned server. Objects in `world.roomObjects` that were never
+ * recorded are first numbered in key order, so recorded objects outrank all of them. Inserted
+ * objects that are not recorded count as inserted at the next call or tick; removals need no call.
+ * The order is part of the world data and survives snapshots. Cost: O(room objects + ids); record a
+ * batch of writes with one call. Throws at the first id not in `world.roomObjects`; the ids before
+ * it stay recorded.
+ */
+export function recordRoomObjectWrites(world: WorldState, ids: Iterable<string>): void {
+  const seqs = syncRoomObjectWriteOrder(world);
+  for (const id of ids) {
+    if (!Object.prototype.hasOwnProperty.call(world.roomObjects, id)) {
+      throw new Error(`recordRoomObjectWrites: room object ${id} does not exist`);
+    }
+    bumpRoomObjectWrite(world, seqs, id);
+  }
+}
+
+/** `recordRoomObjectWrites` for a single write. */
+export function recordRoomObjectWrite(world: WorldState, id: string): void {
+  const seqs = syncRoomObjectWriteOrder(world);
+  if (!Object.hasOwn(world.roomObjects, id)) {
+    throw new Error(`recordRoomObjectWrites: room object ${id} does not exist`);
+  }
+  bumpRoomObjectWrite(world, seqs, id);
 }
 
 export function createWorldState(init: Partial<WorldState> = {}): WorldState {
@@ -522,5 +592,7 @@ export function createWorldState(init: Partial<WorldState> = {}): WorldState {
     mapViews: init.mapViews ?? {},
     idCounter: init.idCounter ?? 0,
     rngState: init.rngState ?? 0x2545f491,
+    roomObjectWriteSeq: init.roomObjectWriteSeq ?? {},
+    writeSeq: init.writeSeq ?? 0,
   };
 }

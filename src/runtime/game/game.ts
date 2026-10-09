@@ -766,8 +766,12 @@ export function init(options: GameInitOptions): void {
     get(): unknown {
       try {
         const parsed: unknown = JSON.parse(rawMemory.get() || '{}');
+        // Upstream assigns the property, not the prototype: an own JSON "__proto__" key is
+        // replaced with null while its player-realm prototype remains unchanged.
         if (parsed !== null && typeof parsed === 'object') {
-          Object.setPrototypeOf(parsed, null);
+          if (!Reflect.set(parsed, '__proto__', null)) {
+            throw new TypeError('Could not initialize Memory root');
+          }
         }
         rawMemory._parsed = parsed;
       } catch {

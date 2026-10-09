@@ -30,7 +30,14 @@ import type {
   SimulationEnv,
   SimulationHooks,
 } from './scope.ts';
-import type { NotificationDoc, RoomObject, UserDoc, WorldState } from './state.ts';
+import {
+  bumpRoomObjectWrite,
+  syncRoomObjectWriteOrder,
+  type NotificationDoc,
+  type RoomObject,
+  type UserDoc,
+  type WorldState,
+} from './state.ts';
 import { cloneDeep, jsonClone, merge, SeededRandom } from './support.ts';
 
 export * from './state.ts';
@@ -120,6 +127,8 @@ export class Simulation {
   readonly #random: SeededRandom;
   #pathFinder!: PathFinder;
   readonly #hooks: SimulationHooks;
+  /** Object ids of each room for the running tick (stale entries are filtered on use). */
+  readonly #objectsByRoom = new Map<string, Set<string>>();
 
   constructor(state: WorldState, options: SimulationOptions = {}) {
     this.#world = options.stateOwnership === 'shared' ? state : cloneDeep(state);
@@ -249,30 +258,14 @@ export class Simulation {
 
     // Rooms queue (upstream getAllRoomsNames consumes the active rooms set).
     world.activeRooms = [];
-    const objectsByRoom = new Map<string, string[]>();
-    for (const id of Object.keys(world.roomObjects)) {
-      const room = world.roomObjects[id]?.room;
-      if (room === undefined) {
-        continue;
-      }
-      let list = objectsByRoom.get(room);
-      if (!list) {
-        list = [];
-        objectsByRoom.set(room, list);
-      }
-      list.push(id);
-    }
+    this.#indexRoomObjects();
 
+    // Upstream the main loop adds the active rooms set to the storage rooms queue, from which the
+    // processor pops the most recently added room first (screeps/storage lib/queue.js `queueFetch`).
     const processedRooms: string[] = [];
-    for (const roomName of roomsQueue) {
-      const error = this.#processRoom(
-        roomName,
-        env,
-        roomIntents.get(roomName),
-        objectsByRoom,
-        roomStats,
-        history,
-      );
+    for (let i = roomsQueue.length - 1; i >= 0; i--) {
+      const roomName = roomsQueue[i] as string;
+      const error = this.#processRoom(roomName, env, roomIntents.get(roomName), roomStats, history);
       if (error !== undefined) {
         errors.push({ stage: 'room', room: roomName, message: error });
       } else {
@@ -306,11 +299,56 @@ export class Simulation {
     return new Bulk(collection, () => this.#genId(collection));
   }
 
+  /**
+   * Synchronizes the room object write order with host changes (`syncRoomObjectWriteOrder`) and
+   * groups object ids by room for this tick.
+   */
+  #indexRoomObjects(): void {
+    const world = this.#world;
+    syncRoomObjectWriteOrder(world);
+    this.#objectsByRoom.clear();
+    for (const id of Object.keys(world.roomObjects)) {
+      const room = world.roomObjects[id]?.room;
+      if (room !== undefined) {
+        this.#roomIds(room).add(id);
+      }
+    }
+  }
+
+  #roomIds(room: string): Set<string> {
+    let ids = this.#objectsByRoom.get(room);
+    if (!ids) {
+      ids = new Set();
+      this.#objectsByRoom.set(room, ids);
+    }
+    return ids;
+  }
+
+  /**
+   * Bulk writer for `rooms.objects`. Every applied update or insert makes the object the most
+   * recently written one (upstream LokiJS repositions it at the front of its `room` index range).
+   * Objects written into another room (e.g. a launched nuke) join that room's processing this tick.
+   */
+  #roomObjectsBulk(): Bulk<RoomObject> {
+    const world = this.#world;
+    const seqs = (world.roomObjectWriteSeq ??= {});
+    return new Bulk(world.roomObjects, () => this.#genId(world.roomObjects), {
+      write: (id, doc) => {
+        bumpRoomObjectWrite(world, seqs, id);
+        if (typeof doc.room === 'string') {
+          this.#roomIds(doc.room).add(id);
+        }
+      },
+      remove: (id) => {
+        Reflect.deleteProperty(seqs, id);
+      },
+    });
+  }
+
   #processRoom(
     roomName: string,
     env: SimulationEnv,
     intents: RoomIntentsDoc | undefined,
-    objectsByRoom: ReadonlyMap<string, readonly string[]>,
     roomStats: RoomStats,
     history: Record<string, Record<string, unknown>>,
   ): string | undefined {
@@ -324,13 +362,16 @@ export class Simulation {
       return `Room ${roomName} does not exist`;
     }
 
+    // Storage query order: most recently written first.
+    const seqs = world.roomObjectWriteSeq ?? {};
+    const ids = [...(this.#objectsByRoom.get(roomName) ?? [])].filter(
+      (id) => world.roomObjects[id]?.room === roomName,
+    );
+    ids.sort((a, b) => (seqs[b] ?? 0) - (seqs[a] ?? 0));
     const roomObjects: Record<string, RoomObject> = {};
     const users: Record<string, UserDoc> = {};
-    for (const id of objectsByRoom.get(roomName) ?? []) {
-      const doc = world.roomObjects[id];
-      if (!doc || doc.room !== roomName) {
-        continue;
-      }
+    for (const id of ids) {
+      const doc = world.roomObjects[id] as RoomObject;
       roomObjects[id] = jsonClone(doc);
       if (doc.user) {
         const user = world.users[doc.user];
@@ -349,7 +390,7 @@ export class Simulation {
       roomName,
       roomObjects,
       roomTerrain,
-      bulk: this.#bulk(world.roomObjects),
+      bulk: this.#roomObjectsBulk(),
       bulkUsers: this.#bulk(world.users),
       bulkUsersPowerCreeps: this.#bulk(world.userPowerCreeps),
       bulkFlags: this.#bulk(world.flags),
@@ -453,7 +494,7 @@ export class Simulation {
       roomObjectsByType,
       userPowerCreeps,
       orders,
-      bulkObjects: this.#bulk(world.roomObjects),
+      bulkObjects: this.#roomObjectsBulk(),
       bulkUsers: this.#bulk(world.users),
       bulkUsersPowerCreeps: this.#bulk(world.userPowerCreeps),
       bulkTransactions: this.#bulk(world.transactions),

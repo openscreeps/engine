@@ -180,18 +180,53 @@ from the original JavaScript source.
 
 ## Verification
 
-The checked-in suite has 34 deterministic tests covering embedding, state
-restoration, gameplay boundaries, markets, powers, runtime isolation, CPU
-accounting, callable constructors, and shard access.
+`npm run check` runs the checked-in behavioral tests, strict TypeScript, lint,
+formatting and the declaration build.
 
-During implementation, 28 differential scenarios matched the pinned reference,
-including a 40-tick two-player economy, combat, spawning, NPCs, structures,
-room transitions, markets, player API return codes, and memory segments. That
-comparison used an in-memory storage adapter, normalized generated IDs and
-timing-related bookkeeping, and excluded the added hosted-game APIs from the
-standalone API-surface comparison. It does not establish equivalence of upstream
-parallel-runner races.
+The differential suite executes the original public JavaScript sources pinned in
+`reference-versions.json`, not a second implementation of expected game rules:
 
-A separate native-pathfinder comparison matched 240 seeded cases exactly for
-path, cost, operation count, and incomplete status. A native cross-room
-tie-breaking/operation-limit case is retained in the checked-in tests.
+```sh
+npm run conformance:setup
+npm run conformance
+```
+
+Setup clones missing references under `.reference/` and installs their locked
+JavaScript dependencies with lifecycle scripts disabled. It refuses changed
+tracked source or a different checkout revision. It does not install the old
+native driver. CI runs setup and both comparison suites on Windows and Ubuntu.
+
+`conformance/runtime.mjs` compares player observations, intents and memory using
+the original runtime/game code through a constrained host adapter.
+`conformance/simulation.mjs` compares multi-tick results from the original
+processor against `Simulation`. Each runner reports its exercised coverage,
+reference revisions, differences and normalization. An unexpected mismatch exits
+nonzero; a passing run establishes equivalence only for its scenarios.
+
+`npm run conformance` uses independent processing order and permits only the
+named, two-sided assertions listed in [CONFORMANCE.md](CONFORMANCE.md).
+`npm run conformance:strict` also fails on these retained differences.
+`npm run conformance:controlled` is a diagnostic with oracle order replayed; it
+does not establish independent ordering equivalence.
+
+The compatibility policy is **preserve safety and completed functionality, match
+gameplay**. Ordinary historical gameplay quirks are compatibility requirements.
+Security protections and working replacements for upstream TODOs/crashes may
+diverge only through explicit, narrowly checked cases reported separately.
+Infrastructure adapters must not implement the game rules being compared or
+discard semantic differences.
+
+These suites do not prove private MMO parity, hardware-independent CPU timing,
+native pathfinder equivalence, or upstream parallel-runner race behavior.
+Backend/world comparisons live in `@openscreeps/game`'s conformance suite.
+
+The runtime report separately identifies the hosted-only `Game.shard.access`
+extension, absent from the standalone reference. It compares shared fields and
+asserts the precise extension rather than claiming identical API surfaces.
+Native V8 TypeError wording is diagnostic only; malformed-memory probes compare
+error classes, failing operations and resulting state. Engine-generated gameplay
+results and return codes remain compared.
+
+See [CONFORMANCE.md](CONFORMANCE.md) for retained differences, reproductions,
+linked defect tickets and the distinction between independent and controlled
+processing-order comparisons.

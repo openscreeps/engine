@@ -1,6 +1,11 @@
 export { Engine } from './engine.ts';
 export type { EngineOptions, EngineSnapshot, EngineTickResult } from './engine.ts';
-export { Simulation, createWorldState } from './simulation/index.ts';
+export {
+  Simulation,
+  createWorldState,
+  recordRoomObjectWrite,
+  recordRoomObjectWrites,
+} from './simulation/index.ts';
 export type {
   ManualIntents,
   SimulationHooks,
