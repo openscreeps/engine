@@ -16,6 +16,8 @@ Mise pins Node 24.21.0. `npm run check` runs strict TypeScript checking, type-aw
 ESLint, Prettier verification, the behavioral tests, and the declaration build.
 `npm run format` applies formatting. The package uses ESM and exports built code
 from `dist/index.js`; source tests run with Node's native TypeScript support.
+The `prepare` lifecycle builds `dist` when packing or installing from Git, so a
+pinned Git dependency does not rely on generated files being committed.
 
 ## Embed a world
 
