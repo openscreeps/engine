@@ -103,6 +103,55 @@ void describe('storage processing order', () => {
 });
 
 void describe('world simulation', () => {
+  void it('keeps simulation state identical without history and hides private speech in replay', () => {
+    const world = harvestingWorld();
+    const recorded = new Simulation(world, { recordHistory: true, now: () => 1700000000000 });
+    const unrecorded = new Simulation(world, { recordHistory: false, now: () => 1700000000000 });
+    const snapshots: object[] = [];
+    for (const isPublic of [false, true]) {
+      const intents = {
+        u1: storeIntents(
+          {
+            creep1: {
+              harvest: { id: 'src1' },
+              say: { message: 'hello', isPublic },
+            },
+          },
+          () => 'W1N1',
+        ),
+      };
+      const withHistory = recorded.tick(intents);
+      const withoutHistory = unrecorded.tick(intents);
+      assert.deepEqual(withHistory.errors, []);
+      assert.deepEqual(withoutHistory, { ...withHistory, history: {} });
+      assert.deepEqual(unrecorded.state, recorded.state);
+      assert.deepEqual(recorded.state.roomObjects.creep1?.actionLog?.say, {
+        message: 'hello',
+        isPublic,
+      });
+      const history = withHistory.history.W1N1?.creep1;
+      assert.ok(history && typeof history === 'object' && 'actionLog' in history);
+      const actionLog = history.actionLog;
+      assert.ok(actionLog && typeof actionLog === 'object');
+      assert.equal(Object.hasOwn(history, '_actionLog'), false);
+      assert.equal(Object.hasOwn(history, '_ticksToLive'), false);
+      assert.deepEqual(
+        'say' in actionLog ? actionLog.say : undefined,
+        isPublic ? { message: 'hello', isPublic: true } : undefined,
+      );
+      snapshots.push(actionLog);
+    }
+    recorded.tick({});
+    const [privateLog, publicLog] = snapshots;
+    assert.ok(privateLog && publicLog);
+    assert.equal('say' in privateLog, false);
+    assert.ok('say' in publicLog);
+    assert.deepEqual(publicLog.say, {
+      message: 'hello',
+      isPublic: true,
+    });
+  });
+
   void it('resolves simultaneous swaps rather than blocking both occupied destinations', () => {
     const world = harvestingWorld();
     const first = world.roomObjects.creep1;

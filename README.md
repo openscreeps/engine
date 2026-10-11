@@ -158,6 +158,48 @@ serialization turns into `null`.
   encode persisted data and are rejected if changed, rather than silently
   reinterpreting existing worlds.
 
+## Simulation throughput
+
+Run the deterministic large-world workload without player scripts or worker processes:
+
+```sh
+node examples/simulation-benchmark.ts --rooms 2500 --active 1000 --ticks 8 --warmup 2
+node examples/simulation-benchmark.ts --rooms 2500 --active 2500 --ticks 8 --warmup 2
+```
+
+Each populated room has 50 creeps, a level-8 controller, sources, a spawn,
+extensions, roads, towers, labs, storage, a terminal and a container. Recorded
+intents exercise movement conflicts, harvesting and resource drops; structures
+also tick and decay. Four flag documents per active room exercise room lookup.
+The output includes per-tick durations and a SHA-256 hash of the complete ordered
+final world state. `--history` includes replay recording. Setup, assertions and
+hashing are outside the timed region.
+
+Measured on 2026-10-11, Windows, Node 24.21.0, Ryzen 9 9950X3D; eight measured
+ticks after two warm-up ticks, history disabled, no profiler or concurrent
+verification jobs. The baseline is engine `82c22e5391da91a1efb6c0d047d60296ca7cd94b`,
+using the same workload. Both final-state hashes matched.
+
+| Active / total rooms | Users | Initial objects | Baseline mean ms/tick | Optimized mean ms/tick | Speedup |
+| -------------------- | ----: | --------------: | --------------------: | ---------------------: | ------: |
+| 1,000 / 2,500        |   500 |         157,500 |                 3,003 |                  1,526 |   1.97x |
+| 2,500 / 2,500        | 1,250 |         382,500 |                10,405 |                  4,028 |   2.58x |
+
+These are synthetic, production-sized simulation workloads, not captured
+production worlds or full-server throughput estimates. Player code, persistence,
+networking and cold-start costs are excluded. Compare identical inputs on the
+same hardware; a final hash alone does not replace per-tick differential checks.
+
+The optimizations preserve sequential room order, object write order, random
+draws, JSON storage boundaries and live same-tick reads. Room flag lookups are
+shared until structural flag writes invalidate them; sequential mod hooks retain
+uncached reads because they can mutate captured world state. Movement and creep
+processing avoid temporary whole-room value arrays without caching mutable
+objects. Disabling history now avoids assembling unused history snapshots.
+Separately, ready players in one runtime preparation batch share terrain metadata;
+queued runs, explicit terrain refreshes and standalone runs retain invalidation.
+No tick skipping, reduced maintenance frequency or relaxed CPU limits is involved.
+
 ## Worker processes
 
 By default player isolates and room processing run in the embedding process.

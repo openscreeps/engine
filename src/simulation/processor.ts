@@ -359,7 +359,7 @@ export function processRoom(
     }
     list.push([object.x, object.y]);
   };
-  const objectsToHistory: Record<string, unknown> = {};
+  const objectsToHistory: Record<string, unknown> | undefined = recordHistory ? {} : undefined;
 
   for (const id of Object.keys(roomObjects)) {
     const object = roomObjects[id];
@@ -474,7 +474,7 @@ export function processRoom(
       }
     }
 
-    if (object.type !== 'flag') {
+    if (objectsToHistory && object.type !== 'flag') {
       objectsToHistory[object._id] = object;
       if (object.type === 'creep' || object.type === 'powerCreep') {
         const copy = jsonClone(object);
@@ -531,7 +531,7 @@ export function processRoom(
 
   return {
     activateRoom,
-    history: activateRoom && recordHistory ? jsonClone(objectsToHistory) : undefined,
+    history: activateRoom && objectsToHistory ? jsonClone(objectsToHistory) : undefined,
     mapView,
     roomInfoChanged: !isEqual(roomInfo, oldRoomInfo),
   };

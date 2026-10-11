@@ -68,13 +68,15 @@ export function createPathFinder(terrain: Readonly<Record<string, string>>): Pat
 
 /**
  * Reads the job of `roomName` from the world; `objectIds` must contain the ids of the room's
- * objects (stale ids are skipped). Returns an error message for rooms that cannot be processed.
+ * objects (stale ids are skipped). `roomFlags`, when supplied, must be in collection enumeration
+ * order and reflect the world at this read. Returns an error for rooms that cannot be processed.
  */
 export function readRoomJob(
   world: Readonly<WorldState>,
   roomName: string,
   objectIds: Iterable<string> | undefined,
   intents: RoomIntentsDoc | undefined,
+  roomFlags?: readonly FlagDoc[],
 ): RoomJob | string {
   const roomTerrain = world.terrain[roomName];
   const storedRoomInfo = world.rooms[roomName];
@@ -101,9 +103,9 @@ export function readRoomJob(
       }
     }
   }
-  const flags: ScopeFlag[] = Object.values(world.flags)
-    .filter((flag) => flag.room === roomName)
-    .map((flag) => jsonClone(flag));
+  const flags: ScopeFlag[] = (
+    roomFlags ?? Object.values(world.flags).filter((flag) => flag.room === roomName)
+  ).map((flag) => jsonClone(flag));
   return {
     roomName,
     gameTime: world.gameTime,

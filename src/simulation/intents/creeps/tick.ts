@@ -59,10 +59,19 @@ export function tickCreep(object: RoomObject, scope: RoomScope): void {
   if (object.type !== 'creep') return;
 
   if (object.spawning) {
-    const spawn = Object.values(roomObjects).find(
-      (o) =>
-        o.x === object.x && o.y === object.y && (o.type === 'spawn' || o.type === 'invaderCore'),
-    );
+    let spawn: RoomObject | undefined;
+    for (const id in roomObjects) {
+      if (!Object.hasOwn(roomObjects, id)) continue;
+      const candidate = roomObjects[id] as RoomObject;
+      if (
+        candidate.x === object.x &&
+        candidate.y === object.y &&
+        (candidate.type === 'spawn' || candidate.type === 'invaderCore')
+      ) {
+        spawn = candidate;
+        break;
+      }
+    }
     if (!spawn) {
       bulk.remove(object._id);
       Reflect.deleteProperty(roomObjects, object._id);
@@ -102,11 +111,13 @@ export function tickCreep(object: RoomObject, scope: RoomScope): void {
 
     if (object.ageTime) {
       // since NPC creeps may appear right on portals without `ageTime` defined at the first tick
-      const portal = Object.values(roomObjects).find(
-        (i) => i.type === 'portal' && i.x === object.x && i.y === object.y,
-      );
-      if (portal) {
-        bulk.update(object, { interRoom: portal.destination });
+      for (const id in roomObjects) {
+        if (!Object.hasOwn(roomObjects, id)) continue;
+        const portal = roomObjects[id] as RoomObject;
+        if (portal.type === 'portal' && portal.x === object.x && portal.y === object.y) {
+          bulk.update(object, { interRoom: portal.destination });
+          break;
+        }
       }
     }
 

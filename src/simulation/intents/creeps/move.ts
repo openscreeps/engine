@@ -39,20 +39,21 @@ export function creepMove(object: RoomObject, intent: IntentArgs<'move'>, scope:
     return;
   }
 
-  const targetObjects = Object.values(roomObjects).filter(
-    (i) => i.x === object.x + dx && i.y === object.y + dy,
-  );
-
-  if (
-    !targetObjects.some(
-      (target) =>
-        (contains(C.OBSTACLE_OBJECT_TYPES, target.type) &&
-          target.type !== 'creep' &&
-          target.type !== 'powerCreep') ||
-        (target.type === 'rampart' && !target.isPublic && object.user !== target.user) ||
-        (object.type === 'powerCreep' && target.type === 'portal' && target.destination?.shard),
-    )
-  ) {
-    movement.add(object, dx, dy);
+  const x = object.x + dx;
+  const y = object.y + dy;
+  for (const id in roomObjects) {
+    if (!Object.hasOwn(roomObjects, id)) continue;
+    const target = roomObjects[id] as RoomObject;
+    if (target.x !== x || target.y !== y) continue;
+    if (
+      (contains(C.OBSTACLE_OBJECT_TYPES, target.type) &&
+        target.type !== 'creep' &&
+        target.type !== 'powerCreep') ||
+      (target.type === 'rampart' && !target.isPublic && object.user !== target.user) ||
+      (object.type === 'powerCreep' && target.type === 'portal' && target.destination?.shard)
+    ) {
+      return;
+    }
   }
+  movement.add(object, dx, dy);
 }

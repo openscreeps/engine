@@ -295,6 +295,10 @@ export class BotRuntime implements Disposable {
   readonly #host: SandboxHost;
   /** Players with a run in flight; runs of one player are serialized through this chain. */
   readonly #running: Record<string, Promise<unknown>> = {};
+  readonly #tickTerrainPreparations = new WeakMap<
+    WorldIndex,
+    { world: Readonly<WorldState>; prepare: () => TerrainPack }
+  >();
   #lastCodeTimestamp: number;
   #terrain: TerrainPack | undefined;
   #terrainSignature: string | undefined;
@@ -471,10 +475,18 @@ export class BotRuntime implements Disposable {
     index?: WorldIndex,
   ): Promise<UserRunResult | undefined> {
     this.#assertActive();
+    const terrainPreparation = index ? this.#tickTerrainPreparations.get(index) : undefined;
     const previous = this.#running[userId] ?? Promise.resolve();
     const run = previous
       .catch(() => undefined)
-      .then(() => this.#runUserNow(world, userId, index ?? buildWorldIndex(world, this.#now())));
+      .then(() =>
+        this.#runUserNow(
+          world,
+          userId,
+          index ?? buildWorldIndex(world, this.#now()),
+          terrainPreparation?.world === world ? terrainPreparation.prepare : undefined,
+        ),
+      );
     this.#running[userId] = run;
     const release = (): void => {
       if (this.#running[userId] === run) {
@@ -517,12 +529,13 @@ export class BotRuntime implements Disposable {
     world: Readonly<WorldState>,
     userId: string,
     worldIndex: WorldIndex,
+    prepareTerrain?: () => TerrainPack,
   ): Promise<UserRunResult | undefined> {
     if (this.#disposed) {
       throw new Error('BotRuntime is disposed');
     }
     const prepared = runWithConstants(this.#constants, () =>
-      this.#prepareRun(world, userId, worldIndex),
+      this.#prepareRun(world, userId, worldIndex, prepareTerrain),
     );
     if (prepared === undefined || 'result' in prepared) {
       return prepared?.result;
@@ -538,6 +551,7 @@ export class BotRuntime implements Disposable {
     world: Readonly<WorldState>,
     userId: string,
     worldIndex: WorldIndex,
+    prepareTerrain?: () => TerrainPack,
   ): PreparedRun | { result: UserRunResult | undefined } | undefined {
     const state = this.#users[userId];
     const userDoc = world.users[userId];
@@ -625,7 +639,7 @@ export class BotRuntime implements Disposable {
         codeTimestamp: state.codeTimestamp,
         memoryLimitMb: this.#memoryLimitMb,
         hardTimeoutMs: this.#hardTimeoutMs,
-        terrain: this.#terrainPack(world),
+        terrain: prepareTerrain ? prepareTerrain() : this.#terrainPack(world),
         constants: this.#constants,
         // `cpu`/`cpuBucket` may be Infinity, which JSON cannot carry; they are passed separately.
         input: { userId, data: JSON.stringify({ ...data, cpu: 0, cpuBucket: 0 }), cpu, cpuBucket },
@@ -858,7 +872,37 @@ export class BotRuntime implements Disposable {
       this.#assertActive();
       userIds = userIds.filter((id) => selected.has(id));
     }
-    const settled = await Promise.allSettled(userIds.map((id) => this.runUser(world, id, index)));
+    // Worlds are immutable during a tick's synchronous preparation. Share only that microtask
+    // wave, not terrain captured before a queued player's previous run finishes. Expire the cache
+    // before host hooks/asynchronous work, and invalidate it immediately for another world's pack.
+    let terrain: TerrainPack | undefined;
+    let terrainSource: WorldState['terrain'] | undefined;
+    const prepareTerrain = (): TerrainPack => {
+      if (
+        !terrain ||
+        terrain !== this.#terrain ||
+        terrainSource !== world.terrain ||
+        this.#terrainSignature === undefined
+      ) {
+        terrain = this.#terrainPack(world);
+        terrainSource = world.terrain;
+        queueMicrotask(() => {
+          terrain = undefined;
+          terrainSource = undefined;
+        });
+      }
+      return terrain;
+    };
+    // Scope the resolver to this dispatch's index without bypassing public runUser overrides.
+    // runUser captures it when queued, so later standalone calls cannot inherit a tick's cache.
+    this.#tickTerrainPreparations.set(index, { world, prepare: prepareTerrain });
+    let runs: Promise<UserRunResult | undefined>[];
+    try {
+      runs = userIds.map((id) => this.runUser(world, id, index));
+    } finally {
+      this.#tickTerrainPreparations.delete(index);
+    }
+    const settled = await Promise.allSettled(runs);
     const tick: TickRunResult = { intents: {}, users: {} };
     settled.forEach((outcome, i) => {
       const userId = userIds[i];

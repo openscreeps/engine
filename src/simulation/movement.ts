@@ -123,7 +123,8 @@ export class Movement {
   ): boolean {
     let hasObstacle = false;
     let hasRoad = false;
-    for (const id of Object.keys(this.roomObjects)) {
+    for (const id in this.roomObjects) {
+      if (!Object.hasOwn(this.roomObjects, id)) continue;
       const i = this.roomObjects[id];
       if (!i || i.x !== x || i.y !== y) {
         continue;
@@ -257,19 +258,25 @@ export class Movement {
       return;
     }
 
-    const cellObjects = Object.values(this.roomObjects).filter(
-      (i) => i.x === move.x && i.y === move.y,
-    );
+    let hasSwamp = false;
+    let road: RoomObject | undefined;
+    let constructionSite: RoomObject | undefined;
+    for (const id in this.roomObjects) {
+      if (!Object.hasOwn(this.roomObjects, id)) continue;
+      const target = this.roomObjects[id] as RoomObject;
+      if (target.x !== move.x || target.y !== move.y) continue;
+      if (target.type === 'swamp') hasSwamp = true;
+      if (target.type === 'road') road ??= target;
+      if (target.type === 'constructionSite' && target.user !== object.user) {
+        constructionSite ??= target;
+      }
+    }
 
     let fatigueRate = 2;
-    if (
-      cellObjects.some((i) => i.type === 'swamp') ||
-      checkTerrain(this.roomTerrain, move.x, move.y, C.TERRAIN_MASK_SWAMP)
-    ) {
+    if (hasSwamp || checkTerrain(this.roomTerrain, move.x, move.y, C.TERRAIN_MASK_SWAMP)) {
       fatigueRate = 10;
     }
 
-    const road = cellObjects.find((i) => i.type === 'road');
     if (road) {
       fatigueRate = 1;
       if (object.type === 'powerCreep') {
@@ -286,9 +293,6 @@ export class Movement {
       roomController.user === object.user ||
       !((roomController.safeMode ?? 0) > gameTime)
     ) {
-      const constructionSite = cellObjects.find(
-        (i) => i.type === 'constructionSite' && i.user !== object.user,
-      );
       if (constructionSite) {
         bulk.remove(constructionSite._id);
         if ((constructionSite.progress ?? 0) > 1) {

@@ -47,12 +47,13 @@ import type {
 import {
   bumpRoomObjectWrite,
   syncRoomObjectWriteOrder,
+  type FlagDoc,
   type NotificationDoc,
   type RoomObject,
   type UserDoc,
   type WorldState,
 } from './state.ts';
-import { cloneDeep, jsonClone, merge, SeededRandom } from './support.ts';
+import { cloneDeep, jsonClone, merge, SeededRandom, type PlainRecord } from './support.ts';
 
 export * from './state.ts';
 export type {
@@ -163,6 +164,57 @@ interface ConcurrentStage {
   env: RoomJobEnv;
 }
 
+/**
+ * Read-stage flag lookup in Object.values order, rebuilt lazily after structural flag writes.
+ * Documents stay live; readRoomJob still JSON-clones each one. A new lookup each stage also sees
+ * direct host changes between ticks. Sequential mod hooks use uncached reads instead, since they
+ * can capture and mutate the world without going through a bulk writer.
+ */
+class RoomFlagLookup implements BulkWriteObserver {
+  readonly #world: Readonly<WorldState>;
+  readonly #empty: readonly FlagDoc[] = [];
+  #byRoom: Map<string, FlagDoc[]> | undefined;
+
+  constructor(world: Readonly<WorldState>) {
+    this.#world = world;
+  }
+
+  get(roomName: string): readonly FlagDoc[] {
+    if (!this.#byRoom) {
+      this.#byRoom = new Map();
+      for (const flag of Object.values(this.#world.flags)) {
+        let flags = this.#byRoom.get(flag.room);
+        if (!flags) {
+          flags = [];
+          this.#byRoom.set(flag.room, flags);
+        }
+        flags.push(flag);
+      }
+    }
+    return this.#byRoom.get(roomName) ?? this.#empty;
+  }
+
+  write(_id: string, doc: PlainRecord): void {
+    // Applied updates preserve document identity and key order. If the document is still in its
+    // indexed room, its new data is already visible through the live reference. Inserts (including
+    // replacements of existing ids) and room moves need a rebuild to recover enumeration order.
+    if (
+      this.#byRoom &&
+      !this.#byRoom.get(doc.room as string)?.includes(doc as unknown as FlagDoc)
+    ) {
+      this.invalidate();
+    }
+  }
+
+  remove(): void {
+    this.invalidate();
+  }
+
+  invalidate(): void {
+    this.#byRoom = undefined;
+  }
+}
+
 export class Simulation {
   readonly #world: WorldState;
   readonly #now: () => number;
@@ -270,6 +322,8 @@ export class Simulation {
   #plan(intents: TickIntents, manualIntents: ManualIntents): TickPlan {
     const world = this.#world;
     const roomsQueue: string[] = [...world.activeRooms];
+    // Preserve existing queue duplicates; only newly requested rooms are deduplicated.
+    const queuedRooms = new Set(roomsQueue);
     const roomIntents = new Map<string, RoomIntentsDoc>();
     const globalIntents: GlobalUserIntents[] = [];
     const notify: TickPlan['notify'] = [];
@@ -293,8 +347,9 @@ export class Simulation {
         } else {
           doc.users[userId] = { objects };
         }
-        if (!roomsQueue.includes(roomName)) {
+        if (!queuedRooms.has(roomName)) {
           roomsQueue.push(roomName);
+          queuedRooms.add(roomName);
         }
       }
       if (userIntents.notify) {
@@ -325,8 +380,9 @@ export class Simulation {
           doc.users[userId] = { objectsManual };
         }
       }
-      if (!roomsQueue.includes(roomName)) {
+      if (!queuedRooms.has(roomName)) {
         roomsQueue.push(roomName);
+        queuedRooms.add(roomName);
       }
     }
     return { gameTime: world.gameTime, roomsQueue, roomIntents, globalIntents, notify };
@@ -378,6 +434,7 @@ export class Simulation {
     const plan = this.#plan(intents, manualIntents);
     this.#startRoomStage(plan, () => this.#now());
     this.#indexRoomObjects();
+    const roomFlags = new RoomFlagLookup(world);
 
     // Upstream the main loop adds the active rooms set to the storage rooms queue, from which the
     // processor pops the most recently added room first (screeps/storage lib/queue.js `queueFetch`).
@@ -389,6 +446,7 @@ export class Simulation {
         roomName,
         env,
         plan.roomIntents.get(roomName),
+        roomFlags,
         roomStats,
         history,
       );
@@ -422,6 +480,7 @@ export class Simulation {
     const worldSize = calcWorldSize(Object.values(world.rooms));
     const rooms: ConcurrentStage['rooms'] = [];
     const jobs: ConcurrentStage['jobs'] = [];
+    const roomFlags = new RoomFlagLookup(readWorld);
     for (let i = plan.roomsQueue.length - 1; i >= 0; i--) {
       const roomName = plan.roomsQueue[i] as string;
       const job = readRoomJob(
@@ -429,6 +488,7 @@ export class Simulation {
         roomName,
         this.#objectsByRoom.get(roomName),
         plan.roomIntents.get(roomName),
+        roomFlags.get(roomName),
       );
       if (typeof job === 'string') {
         rooms.push({ roomName, error: job });
@@ -612,15 +672,28 @@ export class Simulation {
     roomName: string,
     env: SimulationEnv,
     intents: RoomIntentsDoc | undefined,
+    roomFlags: RoomFlagLookup,
     roomStats: RoomStats,
     history: Record<string, Record<string, unknown>>,
   ): string | undefined {
     const world = this.#world;
+    const hasHooks =
+      'processObject' in this.#hooks ||
+      'preProcessObjectIntents' in this.#hooks ||
+      'processObjectIntents' in this.#hooks ||
+      'postProcessObject' in this.#hooks ||
+      'processRoom' in this.#hooks ||
+      'strongholdDestroyed' in this.#hooks;
+    if (hasHooks) {
+      // Discard a previously built lookup even if a hook removes itself during this room.
+      roomFlags.invalidate();
+    }
     const job: RoomJob | string = readRoomJob(
       world,
       roomName,
       this.#objectsByRoom.get(roomName),
       intents,
+      hasHooks ? undefined : roomFlags.get(roomName),
     );
     if (typeof job === 'string') {
       return job;
@@ -632,7 +705,7 @@ export class Simulation {
         bulk: this.#roomObjectsBulk(),
         bulkUsers: this.#bulk(world.users),
         bulkUsersPowerCreeps: this.#bulk(world.userPowerCreeps),
-        bulkFlags: this.#bulk(world.flags),
+        bulkFlags: new Bulk(world.flags, () => this.#genId(world.flags), roomFlags),
       },
       (roomStats[roomName] ??= {}),
     );
