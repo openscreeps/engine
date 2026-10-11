@@ -466,16 +466,17 @@ export class Simulation {
   #prepareConcurrentRooms(intents: TickIntents, manualIntents: ManualIntents): ConcurrentStage {
     const world = this.#world;
     let readWorld = world;
+    const objectIds = Object.keys(world.roomObjects);
     const seqs = world.roomObjectWriteSeq ?? {};
-    for (const id in world.roomObjects) {
-      if (Object.hasOwn(world.roomObjects, id) && !Object.hasOwn(seqs, id)) {
+    for (const id of objectIds) {
+      if (!Object.hasOwn(seqs, id)) {
         readWorld = { ...world, roomObjectWriteSeq: { ...seqs } };
-        syncRoomObjectWriteOrder(readWorld);
+        syncRoomObjectWriteOrder(readWorld, objectIds);
         break;
       }
     }
     const plan = this.#plan(intents, manualIntents);
-    this.#indexRoomObjects(false);
+    this.#indexRoomObjects(false, objectIds);
     const now = this.#now();
     const worldSize = calcWorldSize(Object.values(world.rooms));
     const rooms: ConcurrentStage['rooms'] = [];
@@ -617,11 +618,14 @@ export class Simulation {
    * Synchronizes the room object write order with host changes (`syncRoomObjectWriteOrder`) and
    * groups object ids by room for this tick.
    */
-  #indexRoomObjects(normalize = true): void {
+  #indexRoomObjects(
+    normalize = true,
+    objectIds: readonly string[] = Object.keys(this.#world.roomObjects),
+  ): void {
     const world = this.#world;
-    if (normalize) syncRoomObjectWriteOrder(world);
+    if (normalize) syncRoomObjectWriteOrder(world, objectIds);
     this.#objectsByRoom.clear();
-    for (const id of Object.keys(world.roomObjects)) {
+    for (const id of objectIds) {
       const room = world.roomObjects[id]?.room;
       if (room !== undefined) {
         this.#roomIds(room).add(id);
@@ -772,7 +776,17 @@ export class Simulation {
     const orders = Object.values(world.marketOrders).map((order) => jsonClone(order));
     const userPowerCreeps = Object.values(world.userPowerCreeps).map((creep) => jsonClone(creep));
     const involvedUsers = new Set<string>();
-    for (const item of [...orders, ...userPowerCreeps, ...userIntents]) {
+    for (const item of orders) {
+      if (item.user) {
+        involvedUsers.add(item.user);
+      }
+    }
+    for (const item of userPowerCreeps) {
+      if (item.user) {
+        involvedUsers.add(item.user);
+      }
+    }
+    for (const item of userIntents) {
       if (item.user) {
         involvedUsers.add(item.user);
       }

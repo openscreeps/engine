@@ -200,6 +200,36 @@ Separately, ready players in one runtime preparation batch share terrain metadat
 queued runs, explicit terrain refreshes and standalone runs retain invalidation.
 No tick skipping, reduced maintenance frequency or relaxed CPU limits is involved.
 
+Write-order reconciliation and room indexing also share a single own-key
+enumeration per read stage. Runtime document grouping avoids temporary world-value
+arrays; transaction groups are sorted and bounded in place, and room accessibility
+and status are collected together. These indexes still rebuild on every tick:
+host insertions, removals, moves and collection replacement require no new
+invalidation API.
+
+Differential checks against engine `5a49bbcc52142132f939442a251c56d69b1d526d`
+used identical real-bot intents in fresh and developing 122×122 worlds for 120
+ticks each, rebuilding runtime and simulation halfway. Complete world state,
+property ordering, runtime indexes, tick results and detached snapshots matched;
+no world fields were omitted. The paired simulation check excludes maintenance,
+which remains enabled in full `GameSession` runs and consumer regressions.
+
+Full `GameSession.tick()` measurements against the same baseline used three
+alternating pairs per scenario, 600 ticks per run, and a runtime/simulation reset
+after tick 300. The 122×122 world has 14,884 rooms. Values below are medians of
+the three warm-run means, excluding the initial and reset ticks; player code and
+maintenance remain enabled. No other verification jobs ran during timing.
+
+| Scenario            | Baseline ms/tick | Optimized ms/tick | Reduction |
+| ------------------- | ---------------: | ----------------: | --------: |
+| Fresh colony        |            70.46 |             60.82 |    13.68% |
+| Developing colonies |            59.49 |             50.86 |    14.52% |
+
+All pairs matched final controller levels/progress, creep counts and spawn counts.
+One developing candidate run averaged 59.69 ms/tick, so the improvement is a
+repeated-run median, not a guaranteed latency bound. These short runs establish
+simulation throughput, not a measured 40,000-tick duration or full-suite speedup.
+
 ## Worker processes
 
 By default player isolates and room processing run in the embedding process.

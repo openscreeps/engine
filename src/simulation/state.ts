@@ -512,17 +512,22 @@ export interface WorldState {
 /**
  * Brings the write order up to date with `world.roomObjects`: drops entries of removed objects and
  * numbers objects without an entry in key order, as if inserted in that order after all others.
+ * `objectIds`, when supplied, must be the current `Object.keys(world.roomObjects)` in key order.
+ * Read stages can reuse that enumeration when they also need to index the objects.
  */
-export function syncRoomObjectWriteOrder(world: WorldState): Record<string, number> {
+export function syncRoomObjectWriteOrder(
+  world: WorldState,
+  objectIds: readonly string[] = Object.keys(world.roomObjects),
+): Record<string, number> {
   const seqs = (world.roomObjectWriteSeq ??= {});
   let seq = world.writeSeq ?? 0;
-  for (const id in seqs) {
-    if (Object.hasOwn(seqs, id) && !Object.hasOwn(world.roomObjects, id)) {
+  for (const id of Object.keys(seqs)) {
+    if (!Object.hasOwn(world.roomObjects, id)) {
       Reflect.deleteProperty(seqs, id);
     }
   }
-  for (const id in world.roomObjects) {
-    if (Object.hasOwn(world.roomObjects, id) && !Object.hasOwn(seqs, id)) {
+  for (const id of objectIds) {
+    if (!Object.hasOwn(seqs, id)) {
       seqs[id] = ++seq;
     }
   }

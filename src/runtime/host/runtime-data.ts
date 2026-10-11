@@ -9,6 +9,7 @@
 import type {
   FlagDoc,
   MarketOrder,
+  MarketStatsDoc,
   PowerCreepDoc,
   TransactionDoc,
   WorldState,
@@ -52,15 +53,22 @@ function push<T>(index: Record<string, T[]>, key: string, value: T): void {
 }
 
 function latestTransactions(index: Record<string, TransactionDoc[]>): void {
-  for (const [key, list] of Object.entries(index)) {
-    index[key] = list.sort((a, b) => b.time - a.time).slice(0, 100);
+  for (const key in index) {
+    if (!Object.hasOwn(index, key)) continue;
+    const list = index[key] as TransactionDoc[];
+    list.sort((a, b) => b.time - a.time);
+    if (list.length > 100) list.length = 100;
   }
 }
 
 export function buildWorldIndex(world: Readonly<WorldState>, now: number): WorldIndex {
   const objectsByUser: Record<string, RawRoomObject[]> = {};
   const objectsByRoom: Record<string, RawRoomObject[]> = {};
-  for (const object of Object.values(world.roomObjects)) {
+  // Enumerate own keys in the same order as Object.values, without materializing the world's
+  // object values in an additional array. Rebuild each tick so direct host edits remain visible.
+  for (const id in world.roomObjects) {
+    if (!Object.hasOwn(world.roomObjects, id)) continue;
+    const object = world.roomObjects[id] as RawRoomObject;
     if (object.user) {
       push(objectsByUser, object.user, object);
     }
@@ -68,25 +76,32 @@ export function buildWorldIndex(world: Readonly<WorldState>, now: number): World
   }
 
   const flagsByUser: Record<string, FlagDoc[]> = {};
-  for (const flag of Object.values(world.flags)) {
+  for (const id in world.flags) {
+    if (!Object.hasOwn(world.flags, id)) continue;
+    const flag = world.flags[id] as FlagDoc;
     push(flagsByUser, flag.user, flag);
   }
 
   const powerCreepsByUser: Record<string, PowerCreepDoc[]> = {};
-  for (const powerCreep of Object.values(world.userPowerCreeps)) {
+  for (const id in world.userPowerCreeps) {
+    if (!Object.hasOwn(world.userPowerCreeps, id)) continue;
+    const powerCreep = world.userPowerCreeps[id] as PowerCreepDoc;
     push(powerCreepsByUser, powerCreep.user, powerCreep);
   }
 
   const ordersByUser: Record<string, MarketOrder[]> = {};
   const allOrders: Record<string, RuntimeMarketOrder> = {};
   const activeOrders: Record<string, Record<string, RuntimeMarketOrder>> = { all: allOrders };
-  for (const order of Object.values(world.marketOrders)) {
+  for (const id in world.marketOrders) {
+    if (!Object.hasOwn(world.marketOrders, id)) continue;
+    const order = world.marketOrders[id] as MarketOrder;
     if (order.user) {
       push(ordersByUser, order.user, order);
     }
     if (order.active) {
       const { _id, ...rest } = order;
-      const view: RuntimeMarketOrder = { ...rest, id: _id };
+      const view = rest as RuntimeMarketOrder;
+      view.id = _id;
       (activeOrders[order.resourceType] ??= {})[view.id] = view;
       allOrders[view.id] = view;
     }
@@ -94,7 +109,9 @@ export function buildWorldIndex(world: Readonly<WorldState>, now: number): World
 
   const transactionsBySender: Record<string, TransactionDoc[]> = {};
   const transactionsByRecipient: Record<string, TransactionDoc[]> = {};
-  for (const transaction of Object.values(world.transactions)) {
+  for (const id in world.transactions) {
+    if (!Object.hasOwn(world.transactions, id)) continue;
+    const transaction = world.transactions[id] as TransactionDoc;
     if (transaction.sender) {
       push(transactionsBySender, transaction.sender, transaction);
     }
@@ -107,7 +124,9 @@ export function buildWorldIndex(world: Readonly<WorldState>, now: number): World
 
   const allHistory: MarketHistoryEntry[] = [];
   const marketHistory: Record<string, MarketHistoryEntry[]> = { all: allHistory };
-  for (const stats of Object.values(world.marketStats)) {
+  for (const id in world.marketStats) {
+    if (!Object.hasOwn(world.marketStats, id)) continue;
+    const stats = world.marketStats[id] as MarketStatsDoc;
     // Driver `getCachedMarketHistory` deletes `_id` and keeps every other field.
     const entry: MarketHistoryEntry & { _id?: string } = { ...stats };
     delete entry._id;
@@ -116,12 +135,13 @@ export function buildWorldIndex(world: Readonly<WorldState>, now: number): World
   }
 
   const rooms = Object.values(world.rooms);
-  const accessible = rooms
-    .filter((room) => room.status == 'normal' && (!room.openTime || room.openTime < now))
-    .map((room) => room._id);
+  const accessible: string[] = [];
 
   const roomStatusData: RoomStatusData = { novice: {}, respawn: {}, closed: {} };
   for (const room of rooms) {
+    if (room.status == 'normal' && (!room.openTime || room.openTime < now)) {
+      accessible.push(room._id);
+    }
     if (room.novice && room.novice > now) {
       roomStatusData.novice[room._id] = room.novice;
     } else if (room.respawnArea && room.respawnArea > now) {
