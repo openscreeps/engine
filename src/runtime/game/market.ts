@@ -9,7 +9,7 @@
  * used under the ISC license (see THIRD_PARTY_NOTICES.md).
  */
 
-import * as C from '../../constants.ts';
+import { C } from '../../constants.ts';
 import { calcTerminalEnergyCost } from '../../utils/calc.ts';
 import { jsAdd, jsConcat, jsGt, jsLt, jsMul, jsSub, toNumber } from '../../utils/js.ts';
 import { isObject, size } from '../../utils/lodash.ts';

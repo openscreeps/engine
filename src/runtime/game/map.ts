@@ -9,7 +9,7 @@
  * used under the ISC license (see THIRD_PARTY_NOTICES.md).
  */
 
-import * as C from '../../constants.ts';
+import { C } from '../../constants.ts';
 import { getRoomNameFromXY } from '../../utils/rooms.ts';
 import { jsAdd, jsBitAnd, jsConcat, jsGt, jsLt, jsMul } from '../../utils/js.ts';
 import { isObject } from '../../utils/lodash.ts';

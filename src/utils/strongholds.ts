@@ -12,7 +12,7 @@
  * OF THIS SOFTWARE.
  */
 
-import * as C from '../constants.ts';
+import { C } from '../constants.ts';
 
 export type StrongholdTemplateName = keyof typeof templates;
 export type StrongholdTemplate = (typeof templates)[StrongholdTemplateName];

@@ -1,10 +1,10 @@
 /**
  * Shared type vocabulary derived from the literal-typed game constants.
  *
- * These are type-only declarations; the runtime values live in `src/constants.ts`.
+ * These are type-only declarations; the default values live in `src/default-constants.ts`.
  */
 
-import type * as C from '../constants.ts';
+import type * as C from '../default-constants.ts';
 
 type ValueOf<T> = T[keyof T];
 
@@ -253,9 +253,3 @@ export type EventAttackType =
   | typeof C.EVENT_ATTACK_TYPE_NUKE;
 
 export type EventHealType = typeof C.EVENT_HEAL_TYPE_MELEE | typeof C.EVENT_HEAL_TYPE_RANGED;
-
-// ---------------------------------------------------------------------------
-// Constants namespace
-
-/** The shape of the complete constants module, e.g. for injecting into a sandbox global scope. */
-export type Constants = typeof C;

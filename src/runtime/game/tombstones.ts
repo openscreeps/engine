@@ -5,7 +5,7 @@
  * used under the ISC license (see THIRD_PARTY_NOTICES.md).
  */
 
-import * as C from '../../constants.ts';
+import { C } from '../../constants.ts';
 import { getProp } from '../../utils/tables.ts';
 import { isUndefined, sloppyThis } from './compat.ts';
 import { Creep } from './creeps.ts';

@@ -6,7 +6,7 @@
  * used under the ISC license (see THIRD_PARTY_NOTICES.md).
  */
 
-import * as C from '../../constants.ts';
+import { C } from '../../constants.ts';
 import { clone, isArray, isUndefined } from './compat.ts';
 import { gameConstructor, type GameConstructor } from './define.ts';
 import { roomNameToXYLoose } from './map.ts';

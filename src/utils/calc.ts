@@ -3,7 +3,7 @@
  * Copyright (c) 2016, Artem Chivchalov <contact@screeps.com>. ISC License (see THIRD_PARTY_NOTICES.md).
  */
 
-import * as C from '../constants.ts';
+import { C } from '../constants.ts';
 import { toPropertyKey } from './js.ts';
 import { collectionValues, isObject, shuffle, sum } from './lodash.ts';
 import type { ResourceConstant } from '../types/index.ts';
@@ -12,7 +12,6 @@ import { getProp, ownValue, readProp } from './tables.ts';
 type BoostTable = Readonly<
   Record<string, Readonly<Record<string, Readonly<Record<string, number>>>>>
 >;
-const boostTable: BoostTable = C.BOOSTS;
 
 /** Body part entry as stored on creeps (`{type, hits, boost}`) or a bare part type. */
 export interface BodyPartLike {
@@ -54,6 +53,7 @@ export function calcBodyEffectiveness(
     }
     let partPower = basePower;
     if (part.boost) {
+      const boostTable: BoostTable = C.BOOSTS;
       const partBoosts = ownValue(boostTable, bodyPartType);
       if (!partBoosts) {
         // Upstream dereferenced `BOOSTS[bodyPartType][boost]` unguarded.

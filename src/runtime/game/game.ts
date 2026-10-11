@@ -7,7 +7,7 @@
  */
 
 import lodash from 'lodash';
-import * as C from '../../constants.ts';
+import { C } from '../../constants.ts';
 import { isObject } from '../../utils/lodash.ts';
 import { isFunction, isPlainObject } from './compat.ts';
 import type { SandboxConsole } from './console.ts';

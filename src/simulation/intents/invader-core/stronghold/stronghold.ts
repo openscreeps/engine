@@ -3,7 +3,7 @@
  * Copyright (c) 2016, Artem Chivchalov <contact@screeps.com>. ISC license (see THIRD_PARTY_NOTICES.md).
  */
 
-import * as C from '../../../../constants.ts';
+import { C } from '../../../../constants.ts';
 import { calcBodyEffectiveness, calcReward, dist } from '../../../../utils/index.ts';
 import { containerAmounts, containerRewards, templates } from '../../../../utils/strongholds.ts';
 import type { Bulk } from '../../../bulk.ts';

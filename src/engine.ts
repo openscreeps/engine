@@ -1,3 +1,4 @@
+import { defaultConstants, type Constants } from './constants.ts';
 import {
   BotRuntime,
   type BotRuntimeOptions,
@@ -20,8 +21,10 @@ export interface EngineSnapshot {
 }
 
 export interface EngineOptions {
-  simulation?: SimulationOptions;
-  runtime?: BotRuntimeOptions;
+  /** The world's constants for both the simulation and the player runtime (default upstream). */
+  constants?: Constants;
+  simulation?: Omit<SimulationOptions, 'constants'>;
+  runtime?: Omit<BotRuntimeOptions, 'constants'>;
 }
 
 export interface EngineTickResult {
@@ -37,8 +40,9 @@ export class Engine implements Disposable {
   #disposed = false;
 
   constructor(world: WorldState, options: EngineOptions = {}) {
-    this.#simulation = new Simulation(world, options.simulation);
-    this.#runtime = new BotRuntime(options.runtime);
+    const constants = options.constants ?? defaultConstants;
+    this.#simulation = new Simulation(world, { ...options.simulation, constants });
+    this.#runtime = new BotRuntime({ ...options.runtime, constants });
   }
 
   static restore(snapshot: EngineSnapshot, options: EngineOptions = {}): Engine {
@@ -69,14 +73,17 @@ export class Engine implements Disposable {
     this.#running = true;
     try {
       const runtime = await this.#runtime.runTick(this.#simulation.state);
-      const simulation = this.#simulation.tick(runtime.intents);
+      const simulation = await this.#simulation.tickAsync(runtime.intents);
       return { simulation, runtime };
     } finally {
       this.#running = false;
     }
   }
 
-  /** Resolve explicit intents without running player scripts. */
+  /**
+   * Resolve explicit intents without running player scripts. Always processes the rooms in this
+   * process, in the deterministic order, even when the simulation has processors.
+   */
   processIntents(intents: TickIntents, manualIntents?: ManualIntents): TickResult {
     this.#assertIdle();
     this.#running = true;

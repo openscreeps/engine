@@ -3,6 +3,9 @@
  * runtime bundle; it persists (global state, `require` cache) until a global reset.
  */
 
+import type ivm from 'isolated-vm';
+import type { Constants } from '../../constants.ts';
+
 /** All room terrain packed into one buffer (driver `getAllTerrainData`). */
 export interface TerrainPack {
   /** Monotonic version; sandboxes reload terrain when it changes. */
@@ -14,6 +17,8 @@ export interface TerrainPack {
 }
 
 export interface SandboxRunInput {
+  /** Player id, passed to the `playerSandbox` hook. */
+  userId: string;
   data: string;
   cpu: number;
   cpuBucket: number;
@@ -27,6 +32,34 @@ export interface SandboxRunOutput {
   cpuTime: number;
 }
 
+/**
+ * Trusted host view of a prepared player sandbox (the driver `make.js` `playerSandbox` event
+ * argument). Only host code receives it; none of these handles is ever placed in the player global.
+ */
+export interface PlayerSandboxHookApi {
+  /**
+   * Compiles and runs trusted source in the player context (driver
+   * `isolate.compileScriptSync(code).runSync(context)`): transferable completion values are
+   * returned, anything else yields `undefined`.
+   */
+  run(code: string): unknown;
+  /** Assigns a copy of `value` to the player global (driver `global.setSync(name, ExternalCopy)`). */
+  set(name: string, value: unknown): void;
+  /** Returns a copy of a player global property (driver `global.getSync(name).copySync()`). */
+  get(name: string): unknown;
+  getIsolate(): ivm.Isolate;
+  getContext(): ivm.Context;
+  /** Reference to the player global object. */
+  getGlobal(): ivm.Reference<Record<string, unknown>>;
+}
+
+/**
+ * Driver `config.engine.on('playerSandbox', (sandbox, userId) => …)`: called synchronously every
+ * run after the runtime prepared `Game` and the player globals and before player code runs. Its
+ * time is not billed to the player; a throwing hook fails the player's run.
+ */
+export type PlayerSandboxHook = (sandbox: PlayerSandboxHookApi, userId: string) => void;
+
 export interface PlayerSandbox {
   readonly codeTimestamp: number;
   readonly disposed: boolean;
@@ -34,8 +67,15 @@ export interface PlayerSandbox {
   readonly haltRequested: boolean;
   /** Loads (or reloads) terrain into the sandbox when its version differs. */
   loadTerrain(terrain: TerrainPack): Promise<void>;
-  /** Runs one tick; rejects on sandbox-level failures (timeouts, heap exhaustion, disposal). */
-  run(input: SandboxRunInput, timeoutMs: number): Promise<SandboxRunOutput>;
+  /**
+   * Runs one tick, calling `hook` between the runtime preparation and the player code; rejects on
+   * sandbox-level failures (timeouts, heap exhaustion, disposal, hook errors).
+   */
+  run(
+    input: SandboxRunInput,
+    timeoutMs: number,
+    hook?: PlayerSandboxHook,
+  ): Promise<SandboxRunOutput>;
   dispose(): void;
 }
 
@@ -45,4 +85,6 @@ export interface SandboxOptions {
   /** Base heap limit in MB (terrain size is added like upstream). */
   memoryLimitMb: number;
   terrain: TerrainPack;
+  /** The world's constants, copied into the isolate before the bundle evaluates. */
+  constants: Constants;
 }

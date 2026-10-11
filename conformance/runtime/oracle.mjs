@@ -135,7 +135,7 @@ let nativeTerrainLoaded;
 // `ivm.NativeModule` instance exactly like driver user-vm.js) or a stub whose search fails
 // explicitly. CPU billing, native heap/CPU termination and full driver/server scheduling are NOT
 // conformance claims. No gameplay return codes or intent rules are implemented in this adapter.
-export async function createRuntimeOracle({ now, nativeTerrain }) {
+export async function createRuntimeOracle({ now, nativeTerrain, freezeCpuTime = false }) {
   for (const [name, version] of [
     ['lodash', '3.10.1'],
     ['@screeps/pathfinding', '0.4.17'],
@@ -206,6 +206,15 @@ export async function createRuntimeOracle({ now, nativeTerrain }) {
       ).run(context);
       await context.global.set('_ivm', ivm);
       await context.global.set('_isolate', isolate);
+      // Accounting-only conformance: freeze measured time, not the intent accumulator.
+      // The real isolate still executes player code and enforces the host timeout.
+      if (freezeCpuTime) {
+        await context.eval(`_isolate = {
+          cpuTime: 0n,
+          compileScriptSync: _isolate.compileScriptSync.bind(_isolate),
+          getHeapStatisticsSync: _isolate.getHeapStatisticsSync.bind(_isolate)
+        };`);
+      }
       await context.global.set('_context', context);
       await context.global.set('_worldSize', driver.getWorldSize());
       if (nativeModule) {

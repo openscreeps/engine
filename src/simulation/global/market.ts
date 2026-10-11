@@ -1,6 +1,6 @@
 // Port of screeps/engine `processor/global-intents/market.js`. Copyright (c) 2016, Artem Chivchalov <contact@screeps.com>. ISC license (see THIRD_PARTY_NOTICES.md).
 
-import * as C from '../../constants.ts';
+import { C } from '../../constants.ts';
 import { calcResources, calcRoomsDistance, calcTerminalEnergyCost } from '../../utils/index.ts';
 import type { Bulk } from '../bulk.ts';
 import type { GlobalScope, IntentArgs } from '../scope.ts';

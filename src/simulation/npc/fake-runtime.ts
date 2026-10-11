@@ -3,7 +3,7 @@
  * Copyright (c) 2016, Artem Chivchalov <contact@screeps.com>. ISC license (see THIRD_PARTY_NOTICES.md).
  */
 
-import * as C from '../../constants.ts';
+import { C } from '../../constants.ts';
 import { dist, getDirection, getOffsetsByDirection, roomNameToXY } from '../../utils/index.ts';
 import { CostMatrix } from '../../utils/pathfinder.ts';
 import type { IntentName } from '../../utils/system.ts';

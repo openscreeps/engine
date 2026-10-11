@@ -5,7 +5,7 @@
  * used under the ISC license (see THIRD_PARTY_NOTICES.md).
  */
 
-import * as C from '../constants.ts';
+import { C } from '../constants.ts';
 import { calcSpawns } from './intents/calc-spawns.ts';
 import { tickConstructedWall } from './intents/constructed-walls/tick.ts';
 import { tickConstructionSite } from './intents/construction-sites/tick.ts';

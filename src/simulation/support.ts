@@ -6,7 +6,7 @@
  * (see THIRD_PARTY_NOTICES.md).
  */
 
-import * as C from '../constants.ts';
+import { C } from '../constants.ts';
 import type { Effect, EffectCollection } from './state.ts';
 
 export type PlainRecord = Record<string, unknown>;

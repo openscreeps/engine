@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import * as C from '../src/constants.ts';
+import * as C from '../src/default-constants.ts';
 import { createWorldState, Simulation, type RoomObject } from '../src/simulation/index.ts';
 
 const ROOM = 'W1N1';

@@ -57,10 +57,16 @@ type Update =
   | { $addToSet: { key: string; value: unknown } }
   | { $pull: { key: string; value: unknown } };
 
-type Op =
+/**
+ * One serialized storage write as it crosses the upstream storage RPC boundary. Inserts without an
+ * `_id` receive one from the collection's id generator when applied.
+ */
+export type BulkOp =
   | { op: 'update'; id: string; update: Update }
   | { op: 'remove'; id: string }
   | { op: 'insert'; data: PlainRecord };
+
+type Op = BulkOp;
 
 function removeHidden(obj: unknown): void {
   if (!isObjectLike(obj)) {
@@ -237,6 +243,14 @@ export class Bulk<T extends BulkDoc> {
 
   /** Applies all accumulated writes to the collection. Returns ids of inserted documents. */
   execute(): string[] {
+    return applyBulkOps(this.collection, this.collect(), this.genId, this.observer);
+  }
+
+  /**
+   * The accumulated writes in application order, serialized like the upstream storage RPC request,
+   * without applying them (concurrent room processors ship them to the world owner).
+   */
+  collect(): BulkOp[] {
     if (!this.opsCnt) {
       return [];
     }
@@ -248,43 +262,55 @@ export class Bulk<T extends BulkDoc> {
       ops.push({ op: 'insert', data });
     }
     // The upstream bulk crosses a process boundary (storage RPC) and is serialized here.
-    const serialized = jsonClone(ops);
-    const inserted: string[] = [];
-    const collection = this.collection as Record<string, PlainRecord>;
-    for (const op of serialized) {
-      switch (op.op) {
-        case 'update': {
-          const doc = Object.prototype.hasOwnProperty.call(collection, op.id)
-            ? collection[op.id]
-            : undefined;
-          if (doc) {
-            updateDocument(doc, op.update);
-            this.observer?.write(op.id, doc);
-          }
-          break;
+    return jsonClone(ops);
+  }
+}
+
+/**
+ * Applies serialized bulk writes (`Bulk.collect`) to a collection, generating ids for inserts
+ * without one. Returns ids of inserted documents.
+ */
+export function applyBulkOps<T extends BulkDoc>(
+  target: Record<string, T>,
+  ops: readonly BulkOp[],
+  genId: IdGenerator,
+  observer?: BulkWriteObserver,
+): string[] {
+  const inserted: string[] = [];
+  const collection = target as Record<string, PlainRecord>;
+  for (const op of ops) {
+    switch (op.op) {
+      case 'update': {
+        const doc = Object.prototype.hasOwnProperty.call(collection, op.id)
+          ? collection[op.id]
+          : undefined;
+        if (doc) {
+          updateDocument(doc, op.update);
+          observer?.write(op.id, doc);
         }
-        case 'insert': {
-          const data = op.data;
-          if (typeof data._id !== 'string' || !data._id) {
-            data._id = this.genId();
-          }
-          const id = data._id as string;
-          collection[id] = data;
-          inserted.push(id);
-          this.observer?.write(id, data);
-          break;
+        break;
+      }
+      case 'insert': {
+        const data = op.data;
+        if (typeof data._id !== 'string' || !data._id) {
+          data._id = genId();
         }
-        case 'remove': {
-          if (Object.prototype.hasOwnProperty.call(collection, op.id)) {
-            Reflect.deleteProperty(collection, op.id);
-            this.observer?.remove(op.id);
-          }
-          break;
+        const id = data._id as string;
+        collection[id] = data;
+        inserted.push(id);
+        observer?.write(id, data);
+        break;
+      }
+      case 'remove': {
+        if (Object.prototype.hasOwnProperty.call(collection, op.id)) {
+          Reflect.deleteProperty(collection, op.id);
+          observer?.remove(op.id);
         }
+        break;
       }
     }
-    return inserted;
   }
+  return inserted;
 }
 
 function updateDocument(doc: PlainRecord, update: Update): void {

@@ -3,7 +3,7 @@
  * Copyright (c) 2016, Artem Chivchalov <contact@screeps.com>. ISC License (see THIRD_PARTY_NOTICES.md).
  */
 
-import * as C from '../constants.ts';
+import { C } from '../constants.ts';
 import type { BodyPartConstant } from '../types/index.ts';
 import { jsConcat } from './js.ts';
 import { isObject } from './lodash.ts';

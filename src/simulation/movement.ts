@@ -7,7 +7,7 @@
  * used under the ISC license (see THIRD_PARTY_NOTICES.md).
  */
 
-import * as C from '../constants.ts';
+import { C } from '../constants.ts';
 import { calcBodyEffectiveness, checkTerrain, isAtEdge } from '../utils/index.ts';
 import { addFatigue } from './intents/creeps/add-fatigue.ts';
 import { createEnergy } from './intents/create-energy.ts';

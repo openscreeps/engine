@@ -49,9 +49,15 @@ export interface SandboxEntry {
   install(): void;
   setStaticTerrainData(buffer: ArrayBuffer, roomOffsets: string): void;
   /**
-   * Runs one tick. `data` is JSON encoded `RuntimeData` without `cpu`/`cpuBucket` (which may be
-   * `Infinity`). The result is a plain structure (null-prototype objects, arrays, primitives) that the
-   * host receives as a structured-clone copy and validates as untrusted data.
+   * Prepares one tick (driver `_start`): builds `Game`, `Memory` and the other player globals.
+   * `data` is JSON encoded `RuntimeData` without `cpu`/`cpuBucket` (which may be `Infinity`).
+   * Returns `undefined` when prepared, or a fatal message.
    */
-  run(data: string, cpu: number, cpuBucket: number): SandboxResultMessage;
+  prepare(data: string, cpu: number, cpuBucket: number): SandboxFatalMessage | undefined;
+  /**
+   * Runs the prepared tick's player code (the reference returned by driver `_start`). The result
+   * is a plain structure (null-prototype objects, arrays, primitives) that the host receives as a
+   * structured-clone copy and validates as untrusted data.
+   */
+  execute(): SandboxResultMessage;
 }

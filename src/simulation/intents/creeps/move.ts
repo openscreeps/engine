@@ -3,7 +3,7 @@
  * Copyright (c) 2016, Artem Chivchalov <contact@screeps.com>. ISC license (see THIRD_PARTY_NOTICES.md).
  */
 
-import * as C from '../../../constants.ts';
+import { C } from '../../../constants.ts';
 import { dist, getOffsetsByDirection } from '../../../utils/index.ts';
 import type { IntentArgs, RoomScope } from '../../scope.ts';
 import type { RoomObject } from '../../state.ts';

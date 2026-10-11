@@ -5,6 +5,29 @@ upstream gameplay behavior. An expected divergence is not a matching result.
 The commands below execute pinned original sources after `npm run conformance:setup`.
 Reference revisions are recorded in `reference-versions.json` and runner output.
 
+## Artificial intent CPU
+
+`npm run conformance:cpu` runs the same player program through the original
+runtime/game modules and the local runtime bundle in real V8 isolates. Both
+adapters expose a constant zero `isolate.cpuTime`; compilation and execution still
+use the real isolate. No intent arithmetic, API return codes or `Game.cpu.getUsed`
+implementation is replaced. This isolates deterministic artificial CPU from
+variable execution time without rounding away differences.
+
+The suite compares exact `getUsed()` values before/after 87 actions per tick,
+the unrounded intent accumulator and final raw intents across three ticks.
+Coverage includes replacement, cancellation/reissue, different objects,
+failed validation, free `say`/`pull`, repeated notifications, spawn dry runs,
+market append limits and tick reset. It asserts successful fixture operations
+and that limits were reached so failed calls cannot masquerade as free intents.
+
+The upstream quirk that cancelling free `say`/`pull` subtracts 0.2 is compared
+explicitly, not corrected or normalized. All 267 comparison groups match.
+This suite does **not** prove elapsed-time billing boundaries, the host's final
+intent recount/bucket debit, or timeout/reset policy. Runtime billing now marks
+the clean player-execution phase separately from preparation and trusted hooks.
+Elapsed-time equivalence remains hardware-dependent and outside this suite.
+
 ## Runtime
 
 | Case                | Upstream behavior                          | Local behavior and decision                                                                                                                                                               | Tracking                                                   |

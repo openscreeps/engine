@@ -3,7 +3,7 @@
  * Copyright (c) 2016, Artem Chivchalov <contact@screeps.com>. ISC license (see THIRD_PARTY_NOTICES.md).
  */
 
-import * as C from '../../../constants.ts';
+import { C } from '../../../constants.ts';
 import type { RoomScope } from '../../scope.ts';
 import type { RoomObject, UserDoc } from '../../state.ts';
 import { lookup } from '../../support.ts';

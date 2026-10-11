@@ -8,9 +8,16 @@
  * <contact@screeps.com>, used under the ISC license (see THIRD_PARTY_NOTICES.md).
  */
 
-import * as C from '../constants.ts';
-import type { WorldState } from '../simulation/state.ts';
+import {
+  assertSupportedConstants,
+  C,
+  defaultConstants,
+  runWithConstants,
+  type Constants,
+} from '../constants.ts';
+import type { UserDoc, WorldState } from '../simulation/state.ts';
 import { storeIntents, type IntentSchemas, type StoredUserIntents } from '../utils/index.ts';
+import type { RunnerPool } from '../workers/runner-pool.ts';
 import type { ConsoleMessage } from './game/console.ts';
 import type { IntentList } from './game/intents.ts';
 import type {
@@ -21,16 +28,21 @@ import type {
   RuntimeAccountData,
   RuntimeData,
 } from './game/runtime-data.ts';
-import { getRuntimeBundle } from './host/bundle.ts';
 import { InterShardStore, type InterShardSnapshot } from './host/inter-shard-store.ts';
-import { createIsolatedVmSandbox } from './host/isolated-vm-sandbox.ts';
 import {
   buildRuntimeData,
   buildWorldIndex,
   type ForeignSegmentSelection,
   type WorldIndex,
 } from './host/runtime-data.ts';
-import type { PlayerSandbox, TerrainPack } from './host/sandbox.ts';
+import {
+  errorMessage,
+  LocalSandboxHost,
+  type SandboxHost,
+  type SandboxRunReply,
+  type SandboxRunRequest,
+} from './host/sandbox-host.ts';
+import type { PlayerSandboxHook, TerrainPack } from './host/sandbox.ts';
 import { parseSandboxResult } from './host/validate.ts';
 import type { SandboxRunMessage } from './protocol.ts';
 
@@ -86,6 +98,24 @@ export interface BotRuntimeOptions {
    */
   games?: Record<string, unknown>;
   snapshot?: RuntimeSnapshot;
+  /** This world's constants (`createConstants()` changed by server mods; default upstream). */
+  constants?: Constants;
+  /**
+   * Runner processes hosting the player isolates (upstream `runners_cnt` processes with
+   * `runner_threads` concurrent runs); omit to host them in this process. The caller owns the pool,
+   * which may serve several runtimes; `dispose()` releases this runtime's isolates in it.
+   */
+  runners?: RunnerPool;
+  /**
+   * Driver `playerSandbox` event (server mods) for isolates hosted in this process; with `runners`
+   * the pool's setup module provides it inside the runner processes.
+   */
+  playerSandbox?: PlayerSandboxHook;
+  /**
+   * Driver `getAllUsers` override (server mods): receives copies of the user documents eligible to
+   * run this tick (active, positive CPU on this shard, with code) and returns the ids to run.
+   */
+  getAllUsers?: (eligible: readonly UserDoc[]) => readonly string[] | Promise<readonly string[]>;
 }
 
 /** Persisted per-user runtime state. */
@@ -161,11 +191,17 @@ function intentsCount(intentsList: IntentList): number {
   return count;
 }
 
-function errorMessage(error: unknown): string {
-  if (error instanceof Error) {
-    return error.stack ?? error.message;
-  }
-  return String(error);
+/** A player run prepared in this process, awaiting the sandbox host's reply. */
+interface PreparedRun {
+  request: SandboxRunRequest;
+  data: RuntimeData;
+  state: RuntimeUserSnapshot & { cpuAvailable: number };
+  userDoc: UserDoc;
+  now: number;
+  cpu: number;
+  cpuBucket: number;
+  limited: boolean;
+  shardCpu: number;
 }
 
 function emptyResult(
@@ -253,7 +289,10 @@ export class BotRuntime implements Disposable {
   readonly #customIntentTypes: IntentSchemas;
   readonly #games: Record<string, unknown> | undefined;
   readonly #users: Record<string, RuntimeUserSnapshot>;
-  readonly #sandboxes: Record<string, PlayerSandbox> = {};
+  readonly #constants: Constants;
+  readonly #getAllUsers: BotRuntimeOptions['getAllUsers'];
+  /** Where this runtime's player isolates live. */
+  readonly #host: SandboxHost;
   /** Players with a run in flight; runs of one player are serialized through this chain. */
   readonly #running: Record<string, Promise<unknown>> = {};
   #lastCodeTimestamp: number;
@@ -277,6 +316,17 @@ export class BotRuntime implements Disposable {
     this.#users = snapshot?.users ?? {};
     this.#lastCodeTimestamp = snapshot?.lastCodeTimestamp ?? 0;
     this.#interShard = options.interShard ?? new InterShardStore(snapshot?.interShard);
+    this.#constants = options.constants ?? defaultConstants;
+    assertSupportedConstants(this.#constants);
+    this.#getAllUsers = options.getAllUsers;
+    if (options.runners && options.playerSandbox) {
+      throw new TypeError(
+        'playerSandbox cannot be combined with runners: give the RunnerPool a setup module that returns it',
+      );
+    }
+    this.#host = options.runners
+      ? options.runners.openHost()
+      : new LocalSandboxHost({ playerSandbox: options.playerSandbox });
   }
 
   #user(userId: string): RuntimeUserSnapshot {
@@ -344,7 +394,7 @@ export class BotRuntime implements Disposable {
   /** Release a removed server account's isolate and all of its local persistent runtime data. */
   removeUser(userId: string): void {
     this.#assertIdle(userId);
-    this.#clear(userId);
+    this.#host.clear(userId);
     Reflect.deleteProperty(this.#users, userId);
   }
 
@@ -402,45 +452,6 @@ export class BotRuntime implements Disposable {
     };
     this.#terrainSignature = signature;
     return this.#terrain;
-  }
-
-  async #sandbox(
-    userId: string,
-    codeTimestamp: number,
-    terrain: TerrainPack,
-  ): Promise<{ sandbox: PlayerSandbox; reset: boolean }> {
-    const existing = this.#sandboxes[userId];
-    if (existing) {
-      if (existing.disposed) {
-        this.#clear(userId);
-        throw new Error(
-          'Script execution has been terminated: your isolate disposed unexpectedly, restarting virtual machine',
-        );
-      }
-      if (codeTimestamp <= existing.codeTimestamp) {
-        await existing.loadTerrain(terrain);
-        return { sandbox: existing, reset: false };
-      }
-      this.#clear(userId);
-    }
-    const bundle = await getRuntimeBundle();
-    const sandbox = await createIsolatedVmSandbox({
-      bundle,
-      codeTimestamp,
-      memoryLimitMb: this.#memoryLimitMb,
-      terrain,
-    });
-    if (this.#disposed) {
-      sandbox.dispose();
-      throw new Error('BotRuntime is disposed');
-    }
-    this.#sandboxes[userId] = sandbox;
-    return { sandbox, reset: true };
-  }
-
-  #clear(userId: string): void {
-    this.#sandboxes[userId]?.dispose();
-    Reflect.deleteProperty(this.#sandboxes, userId);
   }
 
   #publicSegments = (
@@ -510,6 +521,24 @@ export class BotRuntime implements Disposable {
     if (this.#disposed) {
       throw new Error('BotRuntime is disposed');
     }
+    const prepared = runWithConstants(this.#constants, () =>
+      this.#prepareRun(world, userId, worldIndex),
+    );
+    if (prepared === undefined || 'result' in prepared) {
+      return prepared?.result;
+    }
+    const reply = await this.#host.run(prepared.request);
+    return runWithConstants(this.#constants, () =>
+      this.#completeRun(world, userId, prepared, reply),
+    );
+  }
+
+  /** Upstream `getUserData` and `getRuntimeData`: bucket accounting and the player's tick data. */
+  #prepareRun(
+    world: Readonly<WorldState>,
+    userId: string,
+    worldIndex: WorldIndex,
+  ): PreparedRun | { result: UserRunResult | undefined } | undefined {
     const state = this.#users[userId];
     const userDoc = world.users[userId];
     if (!state || !userDoc) {
@@ -531,28 +560,32 @@ export class BotRuntime implements Disposable {
       if (state.cpuAvailable < 0) {
         state.cpuAvailable =
           state.cpuAvailable < -shardCpu * 2 ? -shardCpu * 2 : state.cpuAvailable + shardCpu;
-        return emptyResult(
-          userId,
-          0,
-          state.cpuAvailable,
-          'Script execution has been terminated: CPU bucket is empty',
-          false,
-          false,
-        );
+        return {
+          result: emptyResult(
+            userId,
+            0,
+            state.cpuAvailable,
+            'Script execution has been terminated: CPU bucket is empty',
+            false,
+            false,
+          ),
+        };
       }
       cpuBucket = state.cpuAvailable;
       cpu = Math.min(cpuBucket + shardCpu, this.#cpuMaxPerTick);
       if (cpu <= 0) {
         // Only reachable with an explicit zero shard allocation and an empty bucket: upstream's
         // script timeout treats 0 as "no limit", so such a run must not start at all.
-        return emptyResult(
-          userId,
-          cpu,
-          cpuBucket,
-          'Script execution has been terminated: CPU bucket is empty',
-          false,
-          false,
-        );
+        return {
+          result: emptyResult(
+            userId,
+            cpu,
+            cpuBucket,
+            'Script execution has been terminated: CPU bucket is empty',
+            false,
+            false,
+          ),
+        };
       }
     }
 
@@ -587,50 +620,49 @@ export class BotRuntime implements Disposable {
     }
     state.consoleCommands = [];
 
-    const terrain = this.#terrainPack(world);
-    let reset = false;
-    let sandbox: PlayerSandbox | undefined;
-    let message: SandboxRunMessage;
-    let cpuTime: number;
-    try {
-      const acquired = await this.#sandbox(userId, state.codeTimestamp, terrain);
-      sandbox = acquired.sandbox;
-      reset = acquired.reset;
-      // `cpu`/`cpuBucket` may be Infinity, which JSON cannot carry; they are passed separately.
-      const payload = JSON.stringify({ ...data, cpu: 0, cpuBucket: 0 });
-      const output = await this.#runWithHardTimeout(userId, sandbox, payload, cpu, cpuBucket);
-      if (sandbox.haltRequested) {
-        throw new Error('CPU halted');
-      }
-      const result = parseSandboxResult(output.result);
-      if ('invalid' in result) {
-        this.#clear(userId);
-        return emptyResult(
-          userId,
-          cpu,
-          cpuBucket,
-          `Script execution has been terminated: invalid runtime result (${result.invalid}), restarting virtual machine`,
-          reset,
-          false,
-        );
-      }
-      if (result.type === 'fatal') {
-        return emptyResult(userId, cpu, cpuBucket, result.error, reset, false);
-      }
-      message = result;
-      cpuTime = output.cpuTime;
-    } catch (error) {
-      const halted = sandbox?.haltRequested ?? false;
-      const text = halted ? 'CPU halted' : errorMessage(error);
+    return {
+      request: {
+        codeTimestamp: state.codeTimestamp,
+        memoryLimitMb: this.#memoryLimitMb,
+        hardTimeoutMs: this.#hardTimeoutMs,
+        terrain: this.#terrainPack(world),
+        constants: this.#constants,
+        // `cpu`/`cpuBucket` may be Infinity, which JSON cannot carry; they are passed separately.
+        input: { userId, data: JSON.stringify({ ...data, cpu: 0, cpuBucket: 0 }), cpu, cpuBucket },
+      },
+      data,
+      state: state as PreparedRun['state'],
+      userDoc,
+      now,
+      cpu,
+      cpuBucket,
+      limited,
+      shardCpu,
+    };
+  }
+
+  /** Upstream runner `saveResult`: validates the sandbox output and saves the player's state. */
+  #completeRun(
+    world: Readonly<WorldState>,
+    userId: string,
+    run: PreparedRun,
+    reply: SandboxRunReply,
+  ): UserRunResult {
+    const { data, state, userDoc, now, cpu, cpuBucket, limited, shardCpu } = run;
+    const shard = world.shardName;
+    const { reset } = reply;
+    if (!reply.ok || reply.haltRequested) {
+      const halted = reply.haltRequested;
+      const text = reply.ok || halted ? 'CPU halted' : reply.error;
       if (
         halted ||
         /Isolate is disposed/.test(text) ||
         /Isolate has exhausted v8 heap space/.test(text)
       ) {
-        this.#clear(userId);
+        this.#host.clear(userId);
       }
       if (!halted && /Array buffer allocation failed/.test(text)) {
-        this.#clear(userId);
+        this.#host.clear(userId);
         return emptyResult(
           userId,
           cpu,
@@ -642,7 +674,23 @@ export class BotRuntime implements Disposable {
       }
       return emptyResult(userId, cpu, cpuBucket, text, reset, halted);
     }
-
+    const parsed = parseSandboxResult(reply.output.result);
+    if ('invalid' in parsed) {
+      this.#host.clear(userId);
+      return emptyResult(
+        userId,
+        cpu,
+        cpuBucket,
+        `Script execution has been terminated: invalid runtime result (${parsed.invalid}), restarting virtual machine`,
+        reset,
+        false,
+      );
+    }
+    if (parsed.type === 'fatal') {
+      return emptyResult(userId, cpu, cpuBucket, parsed.error, reset, false);
+    }
+    const message: SandboxRunMessage = parsed;
+    const { cpuTime } = reply.output;
     let intents: StoredUserIntents;
     try {
       intents = storeIntents(
@@ -683,6 +731,7 @@ export class BotRuntime implements Disposable {
     if (message.defaultPublicSegment !== undefined) {
       state.defaultPublicSegment = message.defaultPublicSegment;
     }
+    // #prepareRun initialized this bucket; runs for one user remain serialized across the await.
     if (limited) {
       state.cpuAvailable = Math.min(
         state.cpuAvailable + shardCpu - cpuUsed - pixels * C.PIXEL_CPU_COST,
@@ -751,30 +800,6 @@ export class BotRuntime implements Disposable {
     this.#interShard.setShardLimits(userId, requested, now);
   }
 
-  async #runWithHardTimeout(
-    userId: string,
-    sandbox: PlayerSandbox,
-    data: string,
-    cpu: number,
-    cpuBucket: number,
-  ): Promise<{ result: unknown; cpuTime: number }> {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const hardTimeout = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => {
-        this.#clear(userId);
-        reject(new Error('Script execution timed out ungracefully, restarting virtual machine'));
-      }, this.#hardTimeoutMs);
-    });
-    try {
-      return await Promise.race([
-        sandbox.run({ data, cpu, cpuBucket }, this.#hardTimeoutMs),
-        hardTimeout,
-      ]);
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
   #applyForeignSegment(
     world: Readonly<WorldState>,
     state: RuntimeUserSnapshot,
@@ -806,15 +831,16 @@ export class BotRuntime implements Disposable {
   }
 
   /**
-   * Runs every player that has code, in parallel isolates, against the same world state. One
-   * player's failure (including runtime-host errors) is reported in its result and never prevents
-   * the other players from running.
+   * Runs every player that has code, in parallel isolates (in this process or in the runner
+   * processes), against the same world state. One player's failure (including runtime-host and
+   * runner process failures) is reported in its result and never prevents the other players from
+   * running.
    */
   async runTick(world: Readonly<WorldState>): Promise<TickRunResult> {
     this.#assertActive();
     const index = buildWorldIndex(world, this.#now());
     // Driver `getAllUsers`: users with `active != 0` and a positive CPU allocation on this shard.
-    const userIds = Object.keys(this.#users).filter((id) => {
+    let userIds = Object.keys(this.#users).filter((id) => {
       const userDoc = world.users[id];
       const shardCpu = this.#interShard.explicitLimit(id, world.shardName) ?? userDoc?.cpu;
       return (
@@ -825,6 +851,13 @@ export class BotRuntime implements Disposable {
         shardCpu > 0
       );
     });
+    if (this.#getAllUsers) {
+      const selected = new Set(
+        await this.#getAllUsers(userIds.map((id) => structuredClone(world.users[id] as UserDoc))),
+      );
+      this.#assertActive();
+      userIds = userIds.filter((id) => selected.has(id));
+    }
     const settled = await Promise.allSettled(userIds.map((id) => this.runUser(world, id, index)));
     const tick: TickRunResult = { intents: {}, users: {} };
     settled.forEach((outcome, i) => {
@@ -856,9 +889,7 @@ export class BotRuntime implements Disposable {
       return;
     }
     this.#disposed = true;
-    for (const userId of Object.keys(this.#sandboxes)) {
-      this.#clear(userId);
-    }
+    this.#host.dispose();
   }
 
   [Symbol.dispose](): void {

@@ -12,7 +12,7 @@
  * <contact@screeps.com>, used under the ISC license (see THIRD_PARTY_NOTICES.md).
  */
 
-import type * as C from '../constants.ts';
+import type * as C from '../default-constants.ts';
 
 export type ResourceType = (typeof C.RESOURCES_ALL)[number];
 

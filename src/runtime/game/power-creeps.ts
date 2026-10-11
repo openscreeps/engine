@@ -5,7 +5,7 @@
  * used under the ISC license (see THIRD_PARTY_NOTICES.md).
  */
 
-import * as C from '../../constants.ts';
+import { C } from '../../constants.ts';
 import { checkStructureAgainstController } from '../../utils/index.ts';
 import { jsGt, jsLt, jsString, jsSub, looseEquals } from '../../utils/js.ts';
 import { collectionValues, isObject, isString, sum } from '../../utils/lodash.ts';

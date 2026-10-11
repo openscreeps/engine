@@ -7,6 +7,8 @@
  * used under the ISC license (see THIRD_PARTY_NOTICES.md).
  */
 
+// Must stay the first import: installs the world's constants before other modules evaluate.
+import './constants-bootstrap.ts';
 import { Buffer } from 'buffer/';
 import { jsString } from '../../utils/js.ts';
 import * as fakeConsole from '../game/console.ts';
@@ -16,7 +18,7 @@ import type { HeapStatistics } from '../game/game.ts';
 import { takeLocalChange } from '../game/inter-shard-memory.ts';
 import { IntentRecorder } from '../game/intents.ts';
 import { resetTerrain as resetPathFinderTerrain } from '../game/path-finder.ts';
-import { createRawMemory, type SegmentRequests } from '../game/raw-memory.ts';
+import { createRawMemory, type RawMemory, type SegmentRequests } from '../game/raw-memory.ts';
 import type {
   MapGrid,
   MapGridRoomExits,
@@ -28,6 +30,7 @@ import { roomNameToXY } from '../../utils/index.ts';
 import {
   SANDBOX_ENTRY_GLOBAL,
   type SandboxEntry,
+  type SandboxFatalMessage,
   type SandboxResultMessage,
   type SandboxRunMessage,
 } from '../protocol.ts';
@@ -287,13 +290,34 @@ function errorText(e: unknown): string {
   return jsString(e);
 }
 
-function runTick(dataJson: string, cpu: number, cpuBucket: number): SandboxResultMessage {
+/** State of a prepared tick between `prepare` and `execute` (driver `_start` closure). */
+interface PreparedTick {
+  bindings: HostBindings;
+  parsed: Omit<RuntimeData, 'cpu' | 'cpuBucket'>;
+  data: SandboxRuntimeData;
+  requests: SegmentRequests;
+  intents: IntentRecorder;
+  rawMemory: RawMemory;
+  /** Start of the billed phase; `getUsedCpu` measures from it. */
+  clock: { startTime: number };
+}
+
+let prepared: PreparedTick | undefined;
+
+function fatalMessage(error: string): SandboxFatalMessage {
+  const fatal = system.objectCreate(null) as SandboxFatalMessage;
+  fatal.type = 'fatal';
+  fatal.error = error;
+  return fatal;
+}
+
+function prepareTick(dataJson: string, cpu: number, cpuBucket: number): void {
+  prepared = undefined;
   const bindings = requireHost();
   const parsed = system.jsonParse(dataJson) as Omit<RuntimeData, 'cpu' | 'cpuBucket'>;
   system.objectSetPrototypeOf(parsed, null);
 
-  const startDirtyTime = nowCpuTime();
-  let startTime = startDirtyTime;
+  const clock = { startTime: nowCpuTime() };
   const requests: SegmentRequests = {
     activeSegments: undefined,
     publicSegments: undefined,
@@ -315,7 +339,7 @@ function runTick(dataJson: string, cpu: number, cpuBucket: number): SandboxResul
   }
   const data: SandboxRuntimeData = { ...parsed, cpu, cpuBucket, mapGrid, staticTerrainData };
 
-  const getUsedCpu = (): number => nowCpuTime() + intents.cpu - startTime;
+  const getUsedCpu = (): number => nowCpuTime() + intents.cpu - clock.startTime;
   const halt = bindings.halt;
   const cpuHalt = halt
     ? (): never => {
@@ -339,7 +363,19 @@ function runTick(dataJson: string, cpu: number, cpuBucket: number): SandboxResul
     bufferFromBase64,
   });
 
-  startTime = nowCpuTime();
+  prepared = { bindings, parsed, data, requests, intents, rawMemory, clock };
+}
+
+function executeTick(): SandboxResultMessage {
+  const tick = prepared;
+  // Released before player code runs: a prepared tick executes at most once (driver `data = null`).
+  prepared = undefined;
+  if (!tick) {
+    return fatalMessage('The runtime tick is not prepared');
+  }
+  const { bindings, parsed, data, requests, intents, rawMemory, clock } = tick;
+
+  clock.startTime = nowCpuTime();
   bindings.cpuMark(0);
   let type: SandboxRunMessage['type'];
   let error: string | undefined;
@@ -357,7 +393,7 @@ function runTick(dataJson: string, cpu: number, cpuBucket: number): SandboxResul
 
   const memorySegments = validateSegments(rawMemory.segments);
   if (typeof memorySegments === 'string') {
-    return { type: 'fatal', error: memorySegments };
+    return fatalMessage(memorySegments);
   }
 
   const outMessage: SandboxRunMessage = {
@@ -438,6 +474,7 @@ const entry: SandboxEntry = Object.freeze({
       '_halt',
       '_cpuMark',
       '_ivm',
+      '_constants',
       SANDBOX_ENTRY_GLOBAL,
     ]) {
       Reflect.deleteProperty(globalThis, name);
@@ -456,14 +493,19 @@ const entry: SandboxEntry = Object.freeze({
     mapGrid = undefined;
     resetPathFinderTerrain();
   },
-  run(data: string, cpu: number, cpuBucket: number): SandboxResultMessage {
+  prepare(data: string, cpu: number, cpuBucket: number): SandboxFatalMessage | undefined {
     try {
-      return runTick(data, cpu, cpuBucket);
+      prepareTick(data, cpu, cpuBucket);
+      return undefined;
     } catch (e) {
-      const fatal = system.objectCreate(null) as SandboxResultMessage;
-      fatal.type = 'fatal';
-      fatal.error = errorText(e);
-      return fatal;
+      return fatalMessage(errorText(e));
+    }
+  },
+  execute(): SandboxResultMessage {
+    try {
+      return executeTick();
+    } catch (e) {
+      return fatalMessage(errorText(e));
     }
   },
 });

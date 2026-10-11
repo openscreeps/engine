@@ -5,7 +5,7 @@
  * used under the ISC license (see THIRD_PARTY_NOTICES.md).
  */
 
-import * as C from '../../constants.ts';
+import { C } from '../../constants.ts';
 import type { ResourceType } from '../../simulation/state.ts';
 import { capacityForResource } from '../../utils/index.ts';
 import { jsSub } from '../../utils/js.ts';

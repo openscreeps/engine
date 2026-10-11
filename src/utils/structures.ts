@@ -3,7 +3,7 @@
  * Copyright (c) 2016, Artem Chivchalov <contact@screeps.com>. ISC License (see THIRD_PARTY_NOTICES.md).
  */
 
-import * as C from '../constants.ts';
+import { C } from '../constants.ts';
 import { jsAdd, jsBitAnd, jsGe, jsLe, jsLt, jsSub, looseEquals, toPropertyKey } from './js.ts';
 import { collectionValues, isEqual, isNumber, isObject, isString } from './lodash.ts';
 import { getProp } from './tables.ts';

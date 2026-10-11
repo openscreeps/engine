@@ -136,6 +136,65 @@ serialization turns into `null`.
 - Runtime custom object prototypes and intent schemas are configured with
   `runtime.customObjectPrototypes` and `runtime.customIntentTypes`. Processing
   custom intents belongs in the simulation hooks, not in a second simulation.
+  A prototype extender retains a live scope whose runtime data, registries and
+  intent recorder are refreshed each tick; custom methods continue to work
+  without resetting the player's globals.
+- `runtime.playerSandbox(sandbox, userId)` is the driver `playerSandbox` mod
+  event: it runs synchronously every run after `Game` is prepared and before
+  player code, unbilled, with `run`/`set`/`get`/`getIsolate`/`getContext`/
+  `getGlobal`. These handles stay on the host; a throwing hook fails that
+  player's run. Synchronous hook time does not consume other players' host
+  watchdogs, and hook calls into player-controlled globals retain V8 timeouts.
+  `runtime.getAllUsers(eligible)` returns the ids of the eligible users to run,
+  like overriding driver `getAllUsers`.
+- Server mods' constant changes (upstream `config.common.constants`) are
+  per world: mutate a `createConstants()` copy and pass it as
+  `EngineOptions.constants` (or `SimulationOptions.constants` and
+  `runtime.constants`). The simulation and every player isolate read that
+  object; other worlds in the process keep their own values, and the exported
+  `constants` stay the immutable defaults. `worldConstants(world)` returns the
+  constants a simulation bound to its world. String identifiers (structure,
+  resource, body part, look and order types) and `TERRAIN_MASK_*` name or
+  encode persisted data and are rejected if changed, rather than silently
+  reinterpreting existing worlds.
+
+## Worker processes
+
+By default player isolates and room processing run in the embedding process.
+The original launcher topology is available as two supervised process pools,
+owned and closed (`await pool.close()`) by the host and passed to any number of
+engines:
+
+- `new RunnerPool({ processes, threads })` (launcher `runners_cnt`,
+  `runner_threads`) hosts player isolates; pass it as `runtime.runners`. All
+  accounting (CPU bucket, memory, segments, console, intents) stays in the
+  embedding process. Each player keeps one runner, so its globals live across
+  ticks; unlike several original runner processes, a player never has two
+  global environments. A runner that dies fails its in-flight runs like crashed
+  scripts (nothing saved) and is restarted; its players reset globals on their
+  next run.
+- `new ProcessorPool({ processes })` (launcher `processors_cnt`) processes rooms;
+  pass it as `simulation.processors` and advance with `await simulation.tickAsync()`
+  (`Engine.tick()` does). Rooms are read from the stage-start world and processed
+  concurrently with private random streams; their recorded writes are applied in
+  queue order after every room finished, then the global stage runs. The world is
+  untouched until then, so a closed pool rejects the tick without changes. A room
+  whose processor dies is retried once, then reported as a room error. Like the
+  original's concurrent processors, cross-room effects within a tick (for example
+  a nuke launched into a room processed later) and random draws differ from the
+  deterministic in-process order, which stays the default and the conformance
+  reference.
+- `restartIntervalMs` (launcher `restart_interval`) replaces each process
+  periodically after it finished its work in flight. `setup: { module, data }`
+  names a module loaded in every worker process whose default export
+  `(data, kind, host)` returns `{ playerSandbox }` (runners) or `{ hooks }`
+  (processors); functions never cross processes, so these replace the in-process
+  `runtime.playerSandbox` and `simulation.hooks`. `host.call()` reaches the pool's
+  `onCall` handler, and `pool.broadcast(event, data)` reaches `host.on(event)`.
+  `onEvent` reports process start, exit, restart and (with `output: 'events'`)
+  output. Workers exit when the embedding process disconnects.
+  Workers inherit the host's module-loader flags, not its test/eval/inspector
+  arguments, so source-mode hosts can load TypeScript setup modules too.
 
 ## Runtime boundary
 
@@ -216,6 +275,12 @@ fails the suite; it is never replaced by a local implementation.
 npm run conformance:pathfinder -- --seeds 10000 --start 800000
 npm run conformance:pathfinder -- --seed 800123
 ```
+
+`npm run conformance:cpu` compares artificial intent CPU exactly using real player
+runtimes with the measured CPU clock frozen to zero. It covers replacement,
+cancellation, free/failed actions, appended intent caps and per-tick reset.
+Elapsed-time billing, host bucket debits and timeout policy are separate limits;
+see [CONFORMANCE.md](CONFORMANCE.md). The default conformance command includes it.
 
 `npm run conformance` uses independent processing order and permits only the
 named, two-sided assertions listed in [CONFORMANCE.md](CONFORMANCE.md).

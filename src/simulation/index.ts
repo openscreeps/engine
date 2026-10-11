@@ -10,23 +10,37 @@
  * <contact@screeps.com>, used under the ISC license (see THIRD_PARTY_NOTICES.md).
  */
 
+import {
+  bindWorldConstants,
+  defaultConstants,
+  runWithConstants,
+  type Constants,
+} from '../constants.ts';
 import { hasShardAccess } from './global/account.ts';
-import { PathFinder } from '../utils/pathfinder.ts';
+import type { PathFinder } from '../utils/pathfinder.ts';
 import { calcWorldSize } from '../utils/rooms.ts';
 import type { StoredUserIntents } from '../utils/system.ts';
-import { Bulk } from './bulk.ts';
+import type { ProcessorPool, RoomProcessor } from '../workers/processor-pool.ts';
+import { applyBulkOps, Bulk, type BulkWriteObserver } from './bulk.ts';
 import { processGlobal } from './global.ts';
-import { Movement } from './movement.ts';
 import { processRoom, type RoomProcessResult } from './processor.ts';
+import {
+  createPathFinder,
+  createRoomScope,
+  errorMessage,
+  readRoomJob,
+  roomRngSeed,
+  type RoomJob,
+  type RoomJobEnv,
+  type RoomJobOutcome,
+} from './room-job.ts';
 import type {
   GlobalScope,
   GlobalUserIntents,
   ObjectIntentSet,
   RoomIntentSet,
   RoomIntentsDoc,
-  RoomScope,
   RoomUserIntents,
-  ScopeFlag,
   SimulationEnv,
   SimulationHooks,
 } from './scope.ts';
@@ -83,8 +97,23 @@ export interface SimulationOptions {
   ptr?: boolean;
   /** Collect room history snapshots (upstream `history.saveTick`) in tick results. */
   recordHistory?: boolean;
-  /** Processor event hooks (upstream `driver.config` events for server mods). */
+  /**
+   * Processor event hooks (upstream `driver.config` events for server mods). With `processors`, room
+   * hooks run inside the processor processes and come from the pool's setup module instead.
+   */
   hooks?: SimulationHooks;
+  /**
+   * Concurrent room processing in supervised processor processes (upstream `processors_cnt`),
+   * used by `tickAsync`. Rooms are processed from independent stage-start snapshots with private
+   * random streams, and their writes are applied in queue order once all rooms finished, so
+   * cross-room effects within one tick and random draws differ from the deterministic default.
+   */
+  processors?: ProcessorPool;
+  /**
+   * This world's constants (`createConstants()` changed by server mods; upstream
+   * `config.common.constants`), read by reference during every tick. Defaults to the upstream values.
+   */
+  constants?: Constants;
 }
 
 export interface SimulationError {
@@ -112,11 +141,26 @@ function cloneIntents(value: unknown): unknown {
   return JSON.parse(JSON.stringify(value));
 }
 
-function errorMessage(error: unknown): string {
-  if (error instanceof Error) {
-    return error.stack ?? error.message;
-  }
-  return String(error);
+/** Player intents of a tick sorted into upstream storage documents (`driver.saveUserIntents`). */
+interface TickPlan {
+  gameTime: number;
+  /** Rooms in queue order; the processor pops the most recently added room first. */
+  roomsQueue: string[];
+  roomIntents: Map<string, RoomIntentsDoc>;
+  globalIntents: GlobalUserIntents[];
+  notify: Array<[userId: string, notify: NonNullable<StoredUserIntents['notify']>]>;
+}
+
+/** A tick whose rooms were read for concurrent processing, awaiting their outcomes. */
+interface ConcurrentStage {
+  plan: TickPlan;
+  /** Wall clock of the room stage. */
+  now: number;
+  worldSize: number;
+  /** Rooms in processing order: the index of their job, or why they cannot be processed. */
+  rooms: Array<{ roomName: string; job?: number; error?: string }>;
+  jobs: Array<{ job: RoomJob; rngSeed: number }>;
+  env: RoomJobEnv;
 }
 
 export class Simulation {
@@ -127,6 +171,10 @@ export class Simulation {
   readonly #random: SeededRandom;
   #pathFinder!: PathFinder;
   readonly #hooks: SimulationHooks;
+  readonly #processor: RoomProcessor | undefined;
+  /** Incremented whenever pathfinding terrain is rebuilt (processor processes reload it). */
+  #terrainVersion = 0;
+  readonly #constants: Constants;
   /** Object ids of each room for the running tick (stale entries are filtered on use). */
   readonly #objectsByRoom = new Map<string, Set<string>>();
 
@@ -136,7 +184,15 @@ export class Simulation {
     this.#ptr = options.ptr ?? false;
     this.#recordHistory = options.recordHistory ?? false;
     this.#hooks = options.hooks ?? {};
+    this.#constants = options.constants ?? defaultConstants;
+    bindWorldConstants(this.#world, this.#constants);
     this.#random = new SeededRandom(this.#world.rngState);
+    if (options.processors && Object.keys(this.#hooks).length > 0) {
+      throw new TypeError(
+        'Simulation hooks cannot be combined with processors: give the ProcessorPool a setup module that returns them',
+      );
+    }
+    this.#processor = options.processors?.openProcessor();
     this.refreshTerrain();
   }
 
@@ -145,30 +201,53 @@ export class Simulation {
     return this.#world;
   }
 
+  /** This world's constants object (shared by reference, not a copy). */
+  get constants(): Constants {
+    return this.#constants;
+  }
+
   snapshot(): WorldState {
     return cloneDeep(this.#world);
   }
 
   /** Rebuild pathfinding terrain after a host adds, removes, or edits rooms in a shared world. */
   refreshTerrain(): void {
-    this.#pathFinder = new PathFinder(
-      Object.entries(this.#world.terrain)
-        .filter(([room]) => /^[WE]\d+[NS]\d+$/.test(room))
-        .map(([room, terrain]) => ({ room, terrain })),
-    );
+    this.#pathFinder = createPathFinder(this.#world.terrain);
+    this.#terrainVersion++;
   }
 
+  /** Processes one tick in this process, in the deterministic room order. */
   tick(intents: TickIntents, manualIntents: ManualIntents = {}): TickResult {
-    const world = this.#world;
-    // A shared-state host may advance the same generator between ticks (world maintenance).
-    this.#random.state = world.rngState;
-    const gameTime = world.gameTime;
-    const errors: SimulationError[] = [];
-    const roomStats: RoomStats = {};
-    const history: Record<string, Record<string, unknown>> = {};
-    const worldSize = calcWorldSize(Object.values(world.rooms));
+    return runWithConstants(this.#constants, () => this.#tick(intents, manualIntents));
+  }
 
-    const env: SimulationEnv = {
+  /**
+   * Processes one tick like `tick`, with the rooms processed concurrently by the configured
+   * `processors`. The world is not modified until every room finished; a processor process failure
+   * is retried once and otherwise reported as an error of the room, which is then skipped. Rejects,
+   * leaving the world unchanged, only when the processor pool is closed.
+   */
+  async tickAsync(intents: TickIntents, manualIntents: ManualIntents = {}): Promise<TickResult> {
+    const processor = this.#processor;
+    if (!processor) {
+      return this.tick(intents, manualIntents);
+    }
+    const stage = runWithConstants(this.#constants, () =>
+      this.#prepareConcurrentRooms(intents, manualIntents),
+    );
+    const outcomes = await processor.process({
+      terrainVersion: this.#terrainVersion,
+      terrain: this.#world.terrain,
+      constants: this.#constants,
+      env: stage.env,
+      jobs: stage.jobs,
+    });
+    return runWithConstants(this.#constants, () => this.#commitConcurrentRooms(stage, outcomes));
+  }
+
+  #env(worldSize: number): SimulationEnv {
+    const world = this.#world;
+    return {
       config: { ptr: this.#ptr },
       shardName: world.shardName,
       worldSize,
@@ -185,11 +264,15 @@ export class Simulation {
       },
       hooks: this.#hooks,
     };
+  }
 
-    // Player intents (upstream driver.saveUserIntents).
+  /** Player intents (upstream driver.saveUserIntents) without writing the world. */
+  #plan(intents: TickIntents, manualIntents: ManualIntents): TickPlan {
+    const world = this.#world;
     const roomsQueue: string[] = [...world.activeRooms];
     const roomIntents = new Map<string, RoomIntentsDoc>();
     const globalIntents: GlobalUserIntents[] = [];
+    const notify: TickPlan['notify'] = [];
     for (const userId of Object.keys(intents)) {
       const userIntents = intents[userId];
       if (!userIntents) {
@@ -215,7 +298,7 @@ export class Simulation {
         }
       }
       if (userIntents.notify) {
-        this.#saveNotifyIntents(userId, userIntents.notify);
+        notify.push([userId, userIntents.notify]);
       }
       if (userIntents.global) {
         globalIntents.push({
@@ -246,42 +329,213 @@ export class Simulation {
         roomsQueue.push(roomName);
       }
     }
+    return { gameTime: world.gameTime, roomsQueue, roomIntents, globalIntents, notify };
+  }
 
+  /**
+   * Saves `notify` intents, refreshes restricted shard access and consumes the active rooms set
+   * (upstream getAllRoomsNames), as the room stage starts.
+   */
+  #startRoomStage(plan: TickPlan, now: () => number): void {
+    const world = this.#world;
+    for (const [userId, notify] of plan.notify) {
+      this.#saveNotifyIntents(userId, notify);
+    }
     // Restricted shards: keep the upstream `shardAccess` flag (read by claim/reserve/upgrade) in sync
     // with the access expiry; other shards leave the flag to the embedder.
     if (world.restrictedShard) {
-      const now = this.#now();
+      const time = now();
       for (const user of Object.values(world.users)) {
-        user.shardAccess = hasShardAccess(user, now);
+        user.shardAccess = hasShardAccess(user, time);
       }
     }
-
-    // Rooms queue (upstream getAllRoomsNames consumes the active rooms set).
     world.activeRooms = [];
+  }
+
+  /** Global stage, then the game time advances. */
+  #finishTick(
+    plan: TickPlan,
+    env: SimulationEnv,
+    result: Omit<TickResult, 'gameTime'>,
+  ): TickResult {
+    const world = this.#world;
+    const globalError = this.#processGlobal(env, plan.globalIntents);
+    if (globalError !== undefined) {
+      result.errors.push({ stage: 'global', message: globalError });
+    }
+    world.gameTime = plan.gameTime + 1;
+    world.rngState = this.#random.state;
+    return { gameTime: plan.gameTime, ...result };
+  }
+
+  #tick(intents: TickIntents, manualIntents: ManualIntents): TickResult {
+    const world = this.#world;
+    // A shared-state host may advance the same generator between ticks (world maintenance).
+    this.#random.state = world.rngState;
+    const roomStats: RoomStats = {};
+    const history: Record<string, Record<string, unknown>> = {};
+    const env = this.#env(calcWorldSize(Object.values(world.rooms)));
+    const plan = this.#plan(intents, manualIntents);
+    this.#startRoomStage(plan, () => this.#now());
     this.#indexRoomObjects();
 
     // Upstream the main loop adds the active rooms set to the storage rooms queue, from which the
     // processor pops the most recently added room first (screeps/storage lib/queue.js `queueFetch`).
+    const errors: SimulationError[] = [];
     const processedRooms: string[] = [];
-    for (let i = roomsQueue.length - 1; i >= 0; i--) {
-      const roomName = roomsQueue[i] as string;
-      const error = this.#processRoom(roomName, env, roomIntents.get(roomName), roomStats, history);
+    for (let i = plan.roomsQueue.length - 1; i >= 0; i--) {
+      const roomName = plan.roomsQueue[i] as string;
+      const error = this.#processRoom(
+        roomName,
+        env,
+        plan.roomIntents.get(roomName),
+        roomStats,
+        history,
+      );
       if (error !== undefined) {
         errors.push({ stage: 'room', room: roomName, message: error });
       } else {
         processedRooms.push(roomName);
       }
     }
+    return this.#finishTick(plan, env, { processedRooms, history, roomStats, errors });
+  }
 
-    const globalError = this.#processGlobal(env, globalIntents);
-    if (globalError !== undefined) {
-      errors.push({ stage: 'global', message: globalError });
+  /**
+   * Reads every queued room from the stage-start world (upstream processors fetch rooms
+   * concurrently). Unrecorded host writes get a temporary order; no world changes precede success.
+   */
+  #prepareConcurrentRooms(intents: TickIntents, manualIntents: ManualIntents): ConcurrentStage {
+    const world = this.#world;
+    let readWorld = world;
+    const seqs = world.roomObjectWriteSeq ?? {};
+    for (const id in world.roomObjects) {
+      if (Object.hasOwn(world.roomObjects, id) && !Object.hasOwn(seqs, id)) {
+        readWorld = { ...world, roomObjectWriteSeq: { ...seqs } };
+        syncRoomObjectWriteOrder(readWorld);
+        break;
+      }
     }
+    const plan = this.#plan(intents, manualIntents);
+    this.#indexRoomObjects(false);
+    const now = this.#now();
+    const worldSize = calcWorldSize(Object.values(world.rooms));
+    const rooms: ConcurrentStage['rooms'] = [];
+    const jobs: ConcurrentStage['jobs'] = [];
+    for (let i = plan.roomsQueue.length - 1; i >= 0; i--) {
+      const roomName = plan.roomsQueue[i] as string;
+      const job = readRoomJob(
+        readWorld,
+        roomName,
+        this.#objectsByRoom.get(roomName),
+        plan.roomIntents.get(roomName),
+      );
+      if (typeof job === 'string') {
+        rooms.push({ roomName, error: job });
+        continue;
+      }
+      if (world.restrictedShard) {
+        // The flag refreshed at stage start (see `#startRoomStage`).
+        for (const user of Object.values(job.users)) {
+          user.shardAccess = hasShardAccess(user, now);
+        }
+      }
+      rooms.push({ roomName, job: jobs.length });
+      jobs.push({ job, rngSeed: roomRngSeed(world.rngState, plan.gameTime, roomName) });
+    }
+    return {
+      plan,
+      now,
+      worldSize,
+      rooms,
+      jobs,
+      env: {
+        config: { ptr: this.#ptr },
+        shardName: world.shardName,
+        worldSize,
+        now,
+        recordHistory: this.#recordHistory,
+      },
+    };
+  }
 
-    world.gameTime = gameTime + 1;
-    world.rngState = this.#random.state;
+  /** Applies the processed rooms in queue order, then runs the global stage. */
+  #commitConcurrentRooms(stage: ConcurrentStage, outcomes: readonly RoomJobOutcome[]): TickResult {
+    const world = this.#world;
+    syncRoomObjectWriteOrder(world);
+    this.#random.state = world.rngState;
+    const roomStats: RoomStats = {};
+    const history: Record<string, Record<string, unknown>> = {};
+    const env = this.#env(stage.worldSize);
+    this.#startRoomStage(stage.plan, () => stage.now);
+    const errors: SimulationError[] = [];
+    const processedRooms: string[] = [];
+    for (const room of stage.rooms) {
+      const outcome = room.job === undefined ? undefined : outcomes[room.job];
+      const error =
+        outcome === undefined
+          ? (room.error ?? `Room ${room.roomName} was not processed`)
+          : this.#applyRoomOutcome(room.roomName, outcome, env, roomStats, history);
+      if (error !== undefined) {
+        errors.push({ stage: 'room', room: room.roomName, message: error });
+      } else {
+        processedRooms.push(room.roomName);
+      }
+    }
+    return this.#finishTick(stage.plan, env, { processedRooms, history, roomStats, errors });
+  }
 
-    return { gameTime, processedRooms, history, roomStats, errors };
+  /** Applies a concurrently processed room exactly as `#processRoom` applies its own writes. */
+  #applyRoomOutcome(
+    roomName: string,
+    outcome: RoomJobOutcome,
+    env: SimulationEnv,
+    roomStats: RoomStats,
+    history: Record<string, Record<string, unknown>>,
+  ): string | undefined {
+    const world = this.#world;
+    const statsForRoom = (roomStats[roomName] ??= {});
+    for (const [userId, userStats] of Object.entries(outcome.stats)) {
+      const target = (statsForRoom[userId] ??= {});
+      for (const [name, amount] of Object.entries(userStats)) {
+        target[name] = (target[name] ?? 0) + amount;
+      }
+    }
+    for (const effect of outcome.effects) {
+      if (effect.type === 'notify') {
+        this.#sendNotification(effect.userId, effect.message);
+      } else {
+        env.activateRoom(effect.roomName);
+      }
+    }
+    const writes = outcome.writes;
+    if (!writes) {
+      return outcome.error ?? `Room ${roomName} produced no result`;
+    }
+    world.mapViews[roomName] = writes.mapView;
+    applyBulkOps(
+      world.roomObjects,
+      writes.objects,
+      () => this.#genId(world.roomObjects),
+      this.#roomObjectsObserver(),
+    );
+    applyBulkOps(world.users, writes.users, () => this.#genId(world.users));
+    applyBulkOps(world.flags, writes.flags, () => this.#genId(world.flags));
+    applyBulkOps(world.userPowerCreeps, writes.usersPowerCreeps, () =>
+      this.#genId(world.userPowerCreeps),
+    );
+    world.roomEventLogs[roomName] = writes.eventLog;
+    if (writes.activateRoom) {
+      env.activateRoom(roomName);
+      if (writes.history) {
+        history[roomName] = writes.history;
+      }
+    }
+    const storedRoomInfo = world.rooms[roomName];
+    if (writes.roomInfo && storedRoomInfo) {
+      Object.assign(storedRoomInfo, writes.roomInfo);
+    }
+    return undefined;
   }
 
   #genId(collection: Readonly<Record<string, unknown>>): string {
@@ -303,9 +557,9 @@ export class Simulation {
    * Synchronizes the room object write order with host changes (`syncRoomObjectWriteOrder`) and
    * groups object ids by room for this tick.
    */
-  #indexRoomObjects(): void {
+  #indexRoomObjects(normalize = true): void {
     const world = this.#world;
-    syncRoomObjectWriteOrder(world);
+    if (normalize) syncRoomObjectWriteOrder(world);
     this.#objectsByRoom.clear();
     for (const id of Object.keys(world.roomObjects)) {
       const room = world.roomObjects[id]?.room;
@@ -325,14 +579,14 @@ export class Simulation {
   }
 
   /**
-   * Bulk writer for `rooms.objects`. Every applied update or insert makes the object the most
+   * Write observer of `rooms.objects`. Every applied update or insert makes the object the most
    * recently written one (upstream LokiJS repositions it at the front of its `room` index range).
    * Objects written into another room (e.g. a launched nuke) join that room's processing this tick.
    */
-  #roomObjectsBulk(): Bulk<RoomObject> {
+  #roomObjectsObserver(): BulkWriteObserver {
     const world = this.#world;
     const seqs = (world.roomObjectWriteSeq ??= {});
-    return new Bulk(world.roomObjects, () => this.#genId(world.roomObjects), {
+    return {
       write: (id, doc) => {
         bumpRoomObjectWrite(world, seqs, id);
         if (typeof doc.room === 'string') {
@@ -342,7 +596,16 @@ export class Simulation {
       remove: (id) => {
         Reflect.deleteProperty(seqs, id);
       },
-    });
+    };
+  }
+
+  #roomObjectsBulk(): Bulk<RoomObject> {
+    const world = this.#world;
+    return new Bulk(
+      world.roomObjects,
+      () => this.#genId(world.roomObjects),
+      this.#roomObjectsObserver(),
+    );
   }
 
   #processRoom(
@@ -353,62 +616,26 @@ export class Simulation {
     history: Record<string, Record<string, unknown>>,
   ): string | undefined {
     const world = this.#world;
-    const roomTerrain = world.terrain[roomName];
-    const storedRoomInfo = world.rooms[roomName];
-    if (roomTerrain === undefined) {
-      return `Room ${roomName} has no terrain`;
-    }
-    if (!storedRoomInfo) {
-      return `Room ${roomName} does not exist`;
-    }
-
-    // Storage query order: most recently written first.
-    const seqs = world.roomObjectWriteSeq ?? {};
-    const ids = [...(this.#objectsByRoom.get(roomName) ?? [])].filter(
-      (id) => world.roomObjects[id]?.room === roomName,
-    );
-    ids.sort((a, b) => (seqs[b] ?? 0) - (seqs[a] ?? 0));
-    const roomObjects: Record<string, RoomObject> = {};
-    const users: Record<string, UserDoc> = {};
-    for (const id of ids) {
-      const doc = world.roomObjects[id] as RoomObject;
-      roomObjects[id] = jsonClone(doc);
-      if (doc.user) {
-        const user = world.users[doc.user];
-        if (user && !users[doc.user]) {
-          users[doc.user] = jsonClone(user);
-        }
-      }
-    }
-    const flags: ScopeFlag[] = Object.values(world.flags)
-      .filter((flag) => flag.room === roomName)
-      .map((flag) => jsonClone(flag));
-
-    const statsForRoom = (roomStats[roomName] ??= {});
-    const scope: RoomScope = {
-      env,
+    const job: RoomJob | string = readRoomJob(
+      world,
       roomName,
-      roomObjects,
-      roomTerrain,
-      bulk: this.#roomObjectsBulk(),
-      bulkUsers: this.#bulk(world.users),
-      bulkUsersPowerCreeps: this.#bulk(world.userPowerCreeps),
-      bulkFlags: this.#bulk(world.flags),
-      stats: {
-        inc(name, userId, amount) {
-          const userStats = (statsForRoom[String(userId)] ??= {});
-          userStats[name] = (userStats[name] ?? 0) + amount;
-        },
+      this.#objectsByRoom.get(roomName),
+      intents,
+    );
+    if (typeof job === 'string') {
+      return job;
+    }
+    const scope = createRoomScope(
+      job,
+      env,
+      {
+        bulk: this.#roomObjectsBulk(),
+        bulkUsers: this.#bulk(world.users),
+        bulkUsersPowerCreeps: this.#bulk(world.userPowerCreeps),
+        bulkFlags: this.#bulk(world.flags),
       },
-      flags,
-      gameTime: world.gameTime,
-      roomInfo: jsonClone(storedRoomInfo),
-      users,
-      eventLog: [],
-      roomController: undefined,
-      energyAvailable: 0,
-      movement: new Movement(roomObjects, roomTerrain),
-    };
+      (roomStats[roomName] ??= {}),
+    );
 
     let result: RoomProcessResult;
     try {
@@ -431,7 +658,8 @@ export class Simulation {
       }
     }
 
-    if (result.roomInfoChanged) {
+    const storedRoomInfo = world.rooms[roomName];
+    if (result.roomInfoChanged && storedRoomInfo) {
       Object.assign(storedRoomInfo, jsonClone(scope.roomInfo));
     }
     return undefined;

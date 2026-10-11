@@ -249,7 +249,15 @@ export function scope(): GameScope {
 }
 
 export function setScope(value: GameScope): void {
-  current = value;
+  // Prototype extenders close over this object once; upstream refreshes its fields every tick.
+  if (current) {
+    current.runtimeData = value.runtimeData;
+    current.intents = value.intents;
+    current.register = value.register;
+    current.globals = value.globals;
+  } else {
+    current = value;
+  }
 }
 
 /**

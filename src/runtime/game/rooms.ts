@@ -6,7 +6,7 @@
  * used under the ISC license (see THIRD_PARTY_NOTICES.md).
  */
 
-import * as C from '../../constants.ts';
+import { C } from '../../constants.ts';
 import { clone, cloneDeep, contains, isArray, isUndefined, jsSetSloppy } from './compat.ts';
 import { exposeGlobal, gameConstructor, type GameConstructor } from './define.ts';
 import { RoomPosition } from './room-position.ts';
