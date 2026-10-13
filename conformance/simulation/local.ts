@@ -12,11 +12,18 @@
  */
 import { Simulation } from '../../src/simulation/index.ts';
 import { storeIntents } from '../../src/utils/system.ts';
-import shared from './shared.cjs';
+import { createRequire } from 'node:module';
+import type { Shared } from './shared.cts';
+import type { WorldState } from '../../src/simulation/state.ts';
+import type { StoredUserIntents } from '../../src/utils/system.ts';
+import type { LocalIdOf, ProcessingOrder, RawIntents, Scenario, TickRecord } from './types.ts';
+import { required } from '../assert.ts';
+
+const shared = createRequire(import.meta.url)('./shared.cts') as Shared;
 
 const { createResolver, clockAt } = shared;
 
-function imposeObjectOrder(state, order, localIdOf) {
+function imposeObjectOrder(state: WorldState, order: ProcessingOrder, localIdOf: LocalIdOf) {
   const seqs = (state.roomObjectWriteSeq ??= {});
   let seq = state.writeSeq ?? 0;
   // Same treatment of unsequenced objects as the Simulation, so the imposed numbers stay the newest.
@@ -24,8 +31,8 @@ function imposeObjectOrder(state, order, localIdOf) {
   for (const [room, oracleIds] of Object.entries(order)) {
     const ids = oracleIds
       .map(localIdOf)
-      .filter((id) => id !== undefined && state.roomObjects[id]?.room === room);
-    for (let i = ids.length - 1; i >= 0; i--) seqs[ids[i]] = ++seq;
+      .filter((id): id is string => id !== undefined && state.roomObjects[id]?.room === room);
+    for (let i = ids.length - 1; i >= 0; i--) seqs[required(ids[i])] = ++seq;
   }
   state.writeSeq = seq;
 }
@@ -34,10 +41,10 @@ function imposeObjectOrder(state, order, localIdOf) {
  * `scenario.restartLocalBefore`: tick indexes before which the local Simulation is recreated from its
  * own snapshot (persistence continuity of processing order, ids and random state).
  */
-export function createLocalRunner(scenario, { controlledOrder = false } = {}) {
-  let objectOrder = {};
-  const create = (world) => {
-    const created = new Simulation(world, {
+export function createLocalRunner(scenario: Scenario, { controlledOrder = false } = {}) {
+  let objectOrder: ProcessingOrder = {};
+  const create = (world: WorldState): Simulation => {
+    const created: Simulation = new Simulation(world, {
       now: () => clockAt(scenario, created.state.gameTime),
       recordHistory: true,
       hooks: {
@@ -48,13 +55,18 @@ export function createLocalRunner(scenario, { controlledOrder = false } = {}) {
     });
     return created;
   };
-  let simulation = create(structuredClone(scenario.world));
+  let simulation = create(scenario.world);
   return {
-    step(index, oracleTick, localIdOf) {
+    step(
+      index: number,
+      oracleTick: Pick<TickRecord, 'savedUsers'> & Partial<Pick<TickRecord, 'objectOrder'>>,
+      localIdOf: LocalIdOf,
+    ): TickRecord {
       if (scenario.restartLocalBefore?.includes(index))
-        simulation = create(JSON.parse(JSON.stringify(simulation.snapshot())));
-      // The harness owns this simulation; controlled mode rewrites ordering inputs only.
-      const state = simulation.state;
+        simulation = create(JSON.parse(JSON.stringify(simulation.snapshot())) as WorldState);
+      // This harness owns the live simulation; diagnostic controlled mode intentionally mutates
+      // only its ordering inputs, bypassing the public read-only embedding view.
+      const state = simulation.state as WorldState;
       if (controlledOrder) imposeObjectOrder(state, oracleTick.objectOrder ?? {}, localIdOf);
       objectOrder = {};
       const resolve = createResolver({
@@ -62,12 +74,12 @@ export function createLocalRunner(scenario, { controlledOrder = false } = {}) {
         marketOrders: Object.values(state.marketOrders),
         userPowerCreeps: Object.values(state.userPowerCreeps),
       });
-      const intents = {};
+      const intents: Record<string, StoredUserIntents> = {};
       for (const userId of oracleTick.savedUsers) {
-        const flat = resolve(scenario.ticks[index].intents?.[userId] ?? {});
+        const flat = resolve(required(scenario.ticks[index]).intents?.[userId] ?? {}) as RawIntents;
         intents[userId] = storeIntents(flat, (id) =>
           Object.prototype.hasOwnProperty.call(state.roomObjects, id)
-            ? state.roomObjects[id].room
+            ? required(state.roomObjects[id]).room
             : undefined,
         );
       }
@@ -89,7 +101,10 @@ export function createLocalRunner(scenario, { controlledOrder = false } = {}) {
       const result = simulation.tick(intents);
       const roomErrors = result.errors
         .filter((error) => error.stage === 'room')
-        .map((error) => ({ room: error.room, message: error.message.split('\n')[0] }));
+        .map((error) => ({
+          room: required(error.room),
+          message: required(error.message.split('\n')[0]),
+        }));
       return {
         gameTime: result.gameTime,
         savedUsers: oracleTick.savedUsers,

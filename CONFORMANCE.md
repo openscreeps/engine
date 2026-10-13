@@ -34,7 +34,7 @@ Elapsed-time equivalence remains hardware-dependent and outside this suite.
 | ------------------- | ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
 | `Game.shard.access` | Absent from the pinned standalone runtime. | Retain the hosted-game API. The unrestricted fixture asserts an own property with value `true`; compare every shared shard field separately. This is not proof of hosted MMO equivalence. | [engine#1](https://github.com/openscreeps/engine/issues/1) |
 
-Reproduce the extension comparison with `node conformance/runtime.mjs --scenario gameplay`.
+Reproduce the extension comparison with `node conformance/runtime.ts --scenario gameplay`.
 The report separates `hostedApiExtensions` from shared comparisons.
 
 The expanded runtime suite covers 17 scenarios: spatial queries and RoomPosition
@@ -53,6 +53,10 @@ assignments on primitive roots and its null-root errors. The former diagnostic
 exclusion ([engine#3](https://github.com/openscreeps/engine/issues/3)) is removed:
 the exercised Memory errors now compare exactly, including messages.
 
+The immutable original-source bundle is assembled once per harness process and
+reused as source text; each scenario still creates a separate CommonJS module
+realm and real player isolates. No evaluated oracle singleton is shared.
+
 Additional corrected defects: boxed-string paths now deserialize as upstream,
 and RoomPosition accepts the same duck-typed room names. Reproduce with
 `--scenario legacy-paths`, `--scenario positions`, and `--scenario memory-root-number`.
@@ -70,7 +74,7 @@ passing-after run was observed; the issue tracks publication status.
 
 ## Native pathfinding
 
-`node conformance/pathfinder.mjs` executes the pinned driver's `lib/path-finder.js`
+`node conformance/pathfinder.ts` executes the pinned driver's `lib/path-finder.js`
 and compiled native addon against `src/utils/pathfinder.ts`. It compares exact
 ordered paths, `ops`, `cost`, `incomplete`, result keys, errors, callback order,
 argument coercion and nested searches. Inputs are independently materialized on
@@ -120,7 +124,7 @@ unexpected mismatches or processing-order differences. Four scenarios reconstruc
 the simulation from its own JSON snapshot mid-run. No oracle order is replayed
 in this independent mode.
 
-`node conformance/simulation.mjs` is the strict independent comparison.
+`node conformance/simulation.ts` is the strict independent comparison.
 `--controlled-order` is an additional diagnostic that replays the oracle's
 per-room order, marks that intervention in the report, and checks that it was
 applied. `--allow-known-divergences` changes only the exit policy for narrowly

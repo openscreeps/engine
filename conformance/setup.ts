@@ -1,5 +1,5 @@
-import { prepareReferences } from './references.mjs';
-import { prepareNativePathFinder } from './native.mjs';
+import { prepareReferences } from './references.ts';
+import { prepareNativePathFinder } from './native.ts';
 
 prepareReferences(['engine', 'common', 'driver', 'storage'], ['engine', 'common', 'storage']);
 prepareNativePathFinder();

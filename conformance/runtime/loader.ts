@@ -5,13 +5,18 @@ import vm from 'node:vm';
 
 // A private CommonJS cache and realm: no require.cache/process.env mutation and no shared oracle
 // singletons with the processor conformance runner. Replacements are infrastructure only.
-export function createOracleLoader({ packages, replacements = new Map(), now }) {
-  const cache = new Map();
+interface LoaderOptions {
+  packages: Record<string, string>;
+  replacements?: Map<string, unknown>;
+  now: number;
+}
+export function createOracleLoader({ packages, replacements = new Map(), now }: LoaderOptions) {
+  const cache = new Map<string, { exports: unknown }>();
   class FixedDate extends Date {
-    constructor(...args) {
-      super(...(args.length ? args : [now]));
+    constructor(...args: unknown[]) {
+      super(args.length ? (Reflect.construct(Date, args) as Date).getTime() : now);
     }
-    static now() {
+    static override now() {
       return now;
     }
   }
@@ -25,7 +30,7 @@ export function createOracleLoader({ packages, replacements = new Map(), now }) 
     clearInterval,
     process: { env: {}, on() {} },
   });
-  function resolveRequest(request, filename) {
+  function resolveRequest(request: string, filename: string) {
     if (isBuiltin(request)) return request;
     for (const [name, directory] of Object.entries(packages)) {
       if (request === name || request.startsWith(`${name}/`)) {
@@ -37,11 +42,12 @@ export function createOracleLoader({ packages, replacements = new Map(), now }) 
     }
     return createRequire(filename).resolve(request);
   }
-  function load(filename) {
-    if (isBuiltin(filename)) return createRequire(import.meta.url)(filename);
+  function load(filename: string): unknown {
+    if (isBuiltin(filename)) return createRequire(import.meta.url)(filename) as unknown;
     if (replacements.has(filename)) return replacements.get(filename);
-    if (cache.has(filename)) return cache.get(filename).exports;
-    const module = { exports: {} };
+    const cached = cache.get(filename);
+    if (cached) return cached.exports;
+    const module: { exports: unknown } = { exports: {} };
     cache.set(filename, module);
     if (extname(filename) === '.json') {
       module.exports = JSON.parse(readFileSync(filename, 'utf8'));
@@ -49,16 +55,22 @@ export function createOracleLoader({ packages, replacements = new Map(), now }) 
     }
     if (extname(filename) === '.node')
       throw new Error(`Oracle native module is unavailable: ${filename}`);
-    const require = (request) => {
+    const require = (request: string): unknown => {
       if (replacements.has(request)) return replacements.get(request);
       return load(resolveRequest(request, filename));
     };
-    require.resolve = (request) => resolveRequest(request, filename);
+    require.resolve = (request: string) => resolveRequest(request, filename);
     const source = readFileSync(filename, 'utf8').replace(/^#![^\n]*\n/, '');
     const fn = new vm.Script(
       `(function(exports, require, module, __filename, __dirname) {\n${source}\n})`,
       { filename },
-    ).runInContext(context);
+    ).runInContext(context) as (
+      exports: unknown,
+      require: unknown,
+      module: { exports: unknown },
+      filename: string,
+      directory: string,
+    ) => void;
     fn(module.exports, require, module, filename, dirname(filename));
     return module.exports;
   }

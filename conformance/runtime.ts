@@ -1,10 +1,18 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { BotRuntime } from '../src/runtime/index.ts';
-import { verifyReferences } from './references.mjs';
-import { createRuntimeOracle } from './runtime/oracle.mjs';
-import { fixture, spatialWorld, NOW } from './runtime/fixture.mjs';
+import { BotRuntime, type RuntimeUserSnapshot } from '../src/runtime/index.ts';
+import type { WorldState } from '../src/simulation/state.ts';
+import type { GlobalIntents, StoredRoomIntents, StoredUserIntents } from '../src/utils/system.ts';
+import { verifyReferences } from './references.ts';
+import { required } from './assert.ts';
+import {
+  createRuntimeOracle,
+  type OracleRunResult,
+  type OracleUserState,
+  type RuntimeOracle,
+} from './runtime/oracle.ts';
+import { fixture, spatialWorld, NOW } from './runtime/fixture.ts';
 import {
   playerModules,
   gameplay,
@@ -18,10 +26,59 @@ import {
   costMatrix,
   stores,
   nativePaths,
-} from './runtime/player.mjs';
+} from './runtime/player.ts';
 
+interface Scenario {
+  name: string;
+  loop: string;
+  ticks: number;
+  memory: string;
+  world?: (world: WorldState) => WorldState;
+  native?: boolean;
+}
+interface ProbeStats {
+  attempts: number;
+  values: number;
+  throws: number;
+}
+interface ScenarioResult {
+  scenario: string;
+  ticks: number;
+  validationCases?: number;
+  probes?: ProbeStats;
+  process?: string;
+}
+interface HostedApiExtension {
+  name: string;
+  category: string;
+  scenario: string;
+  tick: number;
+  upstream: { present: boolean };
+  local: { present: boolean; value: boolean };
+}
+interface GameplayMemory {
+  probe: {
+    shard: { access?: boolean };
+    records: Record<string, unknown>;
+    positions: { path: unknown[] };
+  };
+}
+interface PersistenceMemory {
+  observations: Array<{
+    turns: number;
+    memory: number;
+    loads: number;
+    segments: Record<number, string>;
+    foreign: { data: string };
+  }>;
+}
+interface Difference {
+  path: string;
+  upstream: unknown;
+  local: unknown;
+}
 verifyReferences(['engine', 'common', 'driver']);
-const scenarios = [
+const scenarios: Scenario[] = [
   { name: 'gameplay', loop: gameplay, ticks: 1, memory: '{}' },
   { name: 'persistence', loop: persistence, ticks: 4, memory: '{"seed":true}' },
   { name: 'raw-memory', loop: rawMemory, ticks: 1, memory: '{"seed":true}' },
@@ -35,10 +92,10 @@ const scenarios = [
     ['array', '[]'],
     ['own-proto', '{"__proto__":{"kept":true},"seed":1}'],
   ].map(([name, memory]) => ({
-    name: `memory-root-${name}`,
+    name: `memory-root-${required(name)}`,
     loop: invalidMemory,
     ticks: 1,
-    memory,
+    memory: required(memory),
   })),
   // Targeted core API scenarios: observations are compared leaf by leaf every tick.
   { name: 'positions', loop: positions, ticks: 3, memory: '{}', world: spatialWorld },
@@ -62,7 +119,7 @@ if (requested !== -1) {
   const name = process.argv[requested + 1];
   assert.ok(
     scenarios.some((scenario) => scenario.name === name),
-    `Unknown scenario ${name}`,
+    `Unknown scenario ${String(name)}`,
   );
 }
 const selected =
@@ -71,9 +128,9 @@ const selected =
     : scenarios.filter((scenario) => scenario.name === process.argv[requested + 1]);
 let comparisons = 0;
 let leaves = 0;
-const results = [];
-const hostedApiExtensions = [];
-function coverageFor(scenario) {
+const results: ScenarioResult[] = [];
+const hostedApiExtensions: HostedApiExtension[] = [];
+function coverageFor(scenario: Scenario) {
   if (scenario.loop === gameplay)
     return [
       'action validation precedence',
@@ -155,8 +212,8 @@ function coverageFor(scenario) {
 // Only absent persistence bookkeeping is dropped by JSON transport. Timing/heap/CPU measurements
 // are not selected at all, never coerced to matching fake values. The separately asserted hosted
 // shard access extension is removed only at its exact observation path. Everything else is compared.
-const transport = (value) => JSON.parse(JSON.stringify(value));
-function differing(a, b, path = '$') {
+const transport = (value: unknown): unknown => JSON.parse(JSON.stringify(value));
+function differing(a: unknown, b: unknown, path = '$'): Difference | undefined {
   if (Object.is(a, b)) {
     leaves++;
     return undefined;
@@ -164,17 +221,20 @@ function differing(a, b, path = '$') {
   if (!a || !b || typeof a !== 'object' || typeof b !== 'object')
     return { path, upstream: a, local: b };
   if (Array.isArray(a) !== Array.isArray(b)) return { path, upstream: a, local: b };
+  // The compared JSON values have already been narrowed to objects above.
+  const left = a as Record<string, unknown>;
+  const right = b as Record<string, unknown>;
   const ak = Object.keys(a),
     bk = Object.keys(b);
   if (ak.length !== bk.length || ak.some((key) => !Object.hasOwn(b, key)))
     return { path: `${path}.[keys]`, upstream: ak, local: bk };
   for (const key of ak) {
-    const found = differing(a[key], b[key], `${path}.${key}`);
+    const found = differing(left[key], right[key], `${path}.${key}`);
     if (found) return found;
   }
   return undefined;
 }
-function same(scenario, tick, section, upstream, local) {
+function same(scenario: string, tick: number, section: string, upstream: unknown, local: unknown) {
   const a = transport(upstream),
     b = transport(local);
   const difference = differing(a, b);
@@ -190,31 +250,32 @@ function same(scenario, tick, section, upstream, local) {
       }),
     );
     throw new Error(
-      `Differential mismatch: ${scenario} tick ${tick} ${section} ${difference.path}`,
+      `Differential mismatch: ${scenario} tick ${String(tick)} ${section} ${difference.path}`,
     );
   }
   assert.deepEqual(b, a);
   comparisons++;
 }
-function intentEnvelope(original) {
+function intentEnvelope(original: Record<string, unknown>): StoredUserIntents {
   // Engine API's typed wrapper is not the old driver's flat wire object. This is lossless:
   // every non-notify/global key is moved under rooms and every payload/order is retained.
-  const result = { rooms: {} };
+  const result: StoredUserIntents = { rooms: {} };
   for (const [key, value] of Object.entries(original)) {
-    if (key === 'notify' || key === 'global') result[key] = value;
-    else result.rooms[key] = value;
+    if (key === 'notify') result.notify = value as NonNullable<StoredUserIntents['notify']>;
+    else if (key === 'global') result.global = value as GlobalIntents;
+    else result.rooms[key] = value as StoredRoomIntents;
   }
   return result;
 }
-function intentOrder(envelope) {
+function intentOrder(envelope: StoredUserIntents) {
   return Object.entries(envelope.rooms).map(([room, objects]) => ({
     room,
     objects: Object.entries(objects).map(([id, intents]) => ({ id, names: Object.keys(intents) })),
   }));
 }
-function sharedGameplayMemory(upstream, local, tick) {
-  const expected = JSON.parse(upstream);
-  const actual = JSON.parse(local);
+function sharedGameplayMemory(upstream: string, local: string, tick: number) {
+  const expected = JSON.parse(upstream) as GameplayMemory;
+  const actual = JSON.parse(local) as GameplayMemory;
   assert.equal(
     Object.hasOwn(expected.probe.shard, 'access'),
     false,
@@ -239,36 +300,54 @@ function sharedGameplayMemory(upstream, local, tick) {
   // player Memory serialization remains compared after this one explicitly asserted divergence.
   return { upstream, local: JSON.stringify(actual), expected, actual };
 }
-function saved(state, original) {
+function saved(state: OracleUserState | RuntimeUserSnapshot, original: boolean) {
+  const foreign = state.activeForeignSegment;
   return {
     memory: state.memory,
     segments: state.segments,
     activeSegments: state.activeSegments,
     publicSegments: state.publicSegments,
     defaultPublicSegment: state.defaultPublicSegment,
-    activeForeignSegment: state.activeForeignSegment && {
-      username: state.activeForeignSegment.username,
-      id: state.activeForeignSegment.id,
-      userId: original ? state.activeForeignSegment.user_id : state.activeForeignSegment.userId,
+    activeForeignSegment: foreign && {
+      username: foreign.username,
+      id: foreign.id,
+      userId: original
+        ? 'user_id' in foreign
+          ? foreign.user_id
+          : undefined
+        : 'userId' in foreign
+          ? foreign.userId
+          : undefined,
     },
   };
 }
 // Counts player-side `attempt` records (single `value` or `throws` key) inside an observation.
-function attemptStats(value, stats = { attempts: 0, values: 0, throws: 0 }) {
+function attemptStats(
+  value: unknown,
+  stats: ProbeStats = { attempts: 0, values: 0, throws: 0 },
+): ProbeStats {
   if (!value || typeof value !== 'object') return stats;
+  // Only object-valued observations are traversed; scalar values were rejected above.
+  const record = value as Record<string, unknown>;
   const keys = Object.keys(value);
   if (keys.length === 1 && (keys[0] === 'value' || keys[0] === 'throws')) {
     stats.attempts++;
     stats[keys[0] === 'value' ? 'values' : 'throws']++;
   }
-  for (const key of keys) attemptStats(value[key], stats);
+  for (const key of keys) attemptStats(record[key], stats);
   return stats;
 }
 // Upstream-side sanity checks: the probes must reach the intended original behavior, not just
 // agree on vacuous empty results or uniform failures.
-function coreAssertions(name, tick, probe) {
+function coreAssertions(name: string, tick: number, raw: unknown) {
   if (name === 'positions') {
-    assert.equal(probe.room.exits[0].value.length, 3, 'Top exit gap found by original');
+    const probe = raw as {
+      room: { exits: Array<{ value: unknown[] }> };
+      look: { terrain: Array<{ value: unknown[] }> };
+      constructRoom: Array<{ value?: unknown; throws?: unknown }>;
+      persist: { sameConstructors: boolean[]; sameExitObjects: boolean };
+    };
+    assert.equal(required(probe.room.exits[0]).value.length, 3, 'Top exit gap found by original');
     assert.deepEqual(
       probe.look.terrain.map((entry) => entry.value[0]),
       ['plain', 'wall', 'plain', 'swamp', 'wall', 'swamp', 'wall', 'wall'],
@@ -279,15 +358,28 @@ function coreAssertions(name, tick, probe) {
     assert.equal(probe.persist.sameExitObjects, tick === 1, 'Exit cache is per tick');
   }
   if (name === 'legacy-paths') {
+    const probe = raw as {
+      paths: Array<Array<{ value?: { length: number } }>>;
+      findPathTo: { crossRoomTop: { value: unknown[] } };
+      endNodes: { dijkstraSources: { value: unknown[] } };
+    };
     const lengths = probe.paths.flat().map((entry) => entry.value?.length ?? -1);
     assert.ok(lengths.filter((length) => length > 3).length > 40, 'Legacy A* produced paths');
     assert.ok(probe.findPathTo.crossRoomTop.value.length > 0, 'Cross-room legacy path ran');
     assert.ok(probe.endNodes.dijkstraSources.value.length > 0, 'Legacy Dijkstra ran');
   }
   if (name === 'map') {
+    const probe = raw as {
+      routes: Array<{ route: { value: unknown[] | number } }>;
+      calls: unknown[];
+      status: Array<{ value?: { status: string } }>;
+    };
     // probe.routes follows the player's pair list: [2] W1N1->W0N1, [5] W1N1->E0N1.
-    assert.ok(probe.routes[2].route.value.length > 1, 'Asymmetric exits force a detour');
-    assert.equal(probe.routes[5].route.value, -2, 'Isolated room is unreachable');
+    assert.ok(
+      (required(probe.routes[2]).route.value as unknown[]).length > 1,
+      'Asymmetric exits force a detour',
+    );
+    assert.equal(required(probe.routes[5]).route.value, -2, 'Isolated room is unreachable');
     assert.ok(probe.calls.length > 3, 'Route callbacks were invoked');
     assert.deepEqual(
       [...new Set(probe.status.map((entry) => entry.value?.status).filter(Boolean))].sort(),
@@ -295,6 +387,11 @@ function coreAssertions(name, tick, probe) {
     );
   }
   if (name === 'cost-matrix') {
+    const probe = raw as {
+      serialized: { nonZero: unknown[] };
+      deserialize: Array<{ throws?: unknown }>;
+      persist: { cells: number[] };
+    };
     assert.ok(probe.serialized.nonZero.length > 10, 'Matrix cells were written');
     assert.ok(
       probe.deserialize.some((entry) => entry.throws),
@@ -303,14 +400,28 @@ function coreAssertions(name, tick, probe) {
     assert.deepEqual(probe.persist.cells, tick === 1 ? [70, 0] : [70, 80]);
   }
   if (name === 'stores') {
+    const probe = raw as {
+      objects: Record<string, { value?: { methods: { getCapacity: Array<{ value: number }> } } }>;
+    };
     assert.equal(Object.keys(probe.objects).length, 18);
     assert.ok(
       Object.values(probe.objects).every((entry) => entry.value),
       'All object stores probed',
     );
-    assert.equal(probe.objects.lab.value.methods.getCapacity[5].value, 3000);
+    assert.equal(
+      required(required(required(probe.objects.lab).value).methods.getCapacity[5]).value,
+      3000,
+    );
   }
   if (name === 'native-paths') {
+    const probe = raw as {
+      search: {
+        single: { value: { path: unknown[]; ops: number } };
+        callbackThrows: { throws: { message: string } };
+      };
+      findPath: { plain: { value: unknown[] } };
+      move: { reuseBefore: { path: unknown } };
+    };
     const single = probe.search.single.value;
     assert.ok(single.path.length > 0 && single.ops > 0, 'Authentic native search ran');
     assert.equal(probe.search.callbackThrows.throws.message, 'room callback failure');
@@ -320,7 +431,7 @@ function coreAssertions(name, tick, probe) {
 }
 
 // Runs one native-backed scenario alone in a child process and merges its verified summary.
-function isolatedNativeRun(scenario) {
+function isolatedNativeRun(scenario: Scenario) {
   const child = spawnSync(
     process.execPath,
     [fileURLToPath(import.meta.url), '--scenario', scenario.name],
@@ -331,7 +442,13 @@ function isolatedNativeRun(scenario) {
     process.stderr.write(child.stderr);
     throw new Error(`Native-backed scenario ${scenario.name} failed in its isolated process`);
   }
-  const summary = JSON.parse(child.stdout.trim().split('\n').at(-1));
+  const summary = JSON.parse(required(child.stdout.trim().split('\n').at(-1))) as {
+    status: string;
+    comparisons: number;
+    matchingLeaves: number;
+    hostedApiExtensions: HostedApiExtension[];
+    scenarios: ScenarioResult[];
+  };
   assert.equal(summary.status, 'passed');
   comparisons += summary.comparisons;
   leaves += summary.matchingLeaves;
@@ -347,7 +464,7 @@ for (const scenario of selected) {
   const world = fixture();
   scenario.world?.(world);
   const runtime = new BotRuntime({ now: () => NOW });
-  let oracle;
+  let oracle: RuntimeOracle | undefined;
   try {
     oracle = await createRuntimeOracle({
       now: NOW,
@@ -372,7 +489,7 @@ for (const scenario of selected) {
     for (let tick = 1; tick <= scenario.ticks; tick++) {
       if (scenario.name === 'persistence') {
         const bobLocal = await runtime.runUser(world, 'u2');
-        const bobOriginal = await oracle.run(world, 'u2');
+        const bobOriginal: OracleRunResult = await oracle.run(world, 'u2');
         assert.ok(bobLocal);
         assert.equal(bobOriginal.type, 'done');
         assert.equal(bobLocal.console.error, undefined);
@@ -381,7 +498,7 @@ for (const scenario of selected) {
           tick,
           'foreign-publisher',
           saved(bobOriginal.persistent, true),
-          saved(runtime.snapshot().users.u2, false),
+          saved(required(runtime.snapshot().users.u2), false),
         );
         if (tick === 4) {
           runtime.setCode('u1', modules);
@@ -398,12 +515,16 @@ for (const scenario of selected) {
         runtime.enqueueConsoleCommand('u1', '99', true);
         oracle.enqueueConsoleCommand('u1', '99', true);
       }
-      const original = await oracle.run(world, 'u1');
+      const original: OracleRunResult = await oracle.run(world, 'u1');
       const local = await runtime.runUser(world, 'u1');
       assert.ok(local, `${scenario.name}: local player ran`);
       // A player exception is a failed probe, not a matching empty result.
-      assert.equal(original.type, 'done', `Oracle player failed: ${original.error}`);
-      assert.equal(local.console.error, undefined, `Local player failed: ${local.console.error}`);
+      assert.equal(original.type, 'done', `Oracle player failed: ${String(original.error)}`);
+      assert.equal(
+        local.console.error,
+        undefined,
+        `Local player failed: ${String(local.console.error)}`,
+      );
       same(scenario.name, tick, 'intents', intentEnvelope(original.intents), local.intents);
       same(
         scenario.name,
@@ -420,8 +541,8 @@ for (const scenario of selected) {
           scenario.name,
           tick,
           'memory-root-observations',
-          JSON.parse(original.console.log[0].message),
-          JSON.parse(local.console.log[0].message),
+          JSON.parse(required(original.console.log[0]).message),
+          JSON.parse(required(local.console.log[0]).message),
         );
       }
       same(scenario.name, tick, 'console', original.console, local.console);
@@ -445,55 +566,60 @@ for (const scenario of selected) {
         tick,
         'persistent-state',
         saved(original.persistent, true),
-        saved({ ...runtime.snapshot().users.u1, memory: localMemory }, false),
+        saved({ ...required(runtime.snapshot().users.u1), memory: localMemory }, false),
       );
       if (scenario.name === 'gameplay') {
-        const memory = JSON.parse(original.memory);
+        const memory = JSON.parse(original.memory) as GameplayMemory;
         validationCases = Object.keys(memory.probe.records).length;
+        // The gameplay fixture records these exact final actions, asserted individually below.
+        const roomIntents = original.intents.W1N1 as {
+          worker: {
+            move: { direction: number };
+            say: { message: string };
+            drop: { resourceType: string };
+          };
+        };
+        const workerIntents = roomIntents.worker;
         assert.ok(validationCases > 140, 'Validation matrix must actually execute');
         assert.equal(
-          original.intents.W1N1.worker.move.direction,
+          workerIntents.move.direction,
           7,
           'Final move replaces earlier calls and canceled intent',
         );
-        assert.equal(
-          original.intents.W1N1.worker.say.message,
-          'last',
-          'Final say replaces first call',
-        );
-        assert.equal(
-          original.intents.W1N1.worker.drop.resourceType,
-          'H',
-          'Final drop replaces earlier resource',
-        );
+        assert.equal(workerIntents.say.message, 'last', 'Final say replaces first call');
+        assert.equal(workerIntents.drop.resourceType, 'H', 'Final drop replaces earlier resource');
         assert.ok(
           memory.probe.positions.path.length > 0,
           'Original legacy pathfinding actually ran',
         );
       }
       if (scenario.name === 'persistence') {
-        const observations = JSON.parse(original.memory).observations;
+        const { observations } = JSON.parse(original.memory) as PersistenceMemory;
         assert.equal(observations.length, tick);
         assert.equal(
-          observations.at(-1).turns,
+          required(observations.at(-1)).turns,
           tick === 4 ? 1 : tick,
           'Persistent global resets only after code changes',
         );
-        assert.equal(observations.at(-1).memory, tick, 'Serialized Memory survives code reset');
-        assert.equal(observations.at(-1).loads, 1, 'Module executed once per isolate');
+        assert.equal(
+          required(observations.at(-1)).memory,
+          tick,
+          'Serialized Memory survives code reset',
+        );
+        assert.equal(required(observations.at(-1)).loads, 1, 'Module executed once per isolate');
         if (tick > 1) {
-          assert.equal(observations.at(-1).segments[3], `segment-${tick - 1}`);
-          assert.equal(observations.at(-1).foreign.data, 'public-bob');
+          assert.equal(required(observations.at(-1)).segments[3], `segment-${String(tick - 1)}`);
+          assert.equal(required(observations.at(-1)).foreign.data, 'public-bob');
         }
       }
       if (scenario.world) {
-        const probe = JSON.parse(original.memory).probe;
+        const { probe } = JSON.parse(original.memory) as { probe: unknown };
         const stats = attemptStats(probe);
         assert.ok(
           stats.values > 0 && stats.throws > 0,
           `${scenario.name}: probes must exercise values and errors`,
         );
-        for (const key of Object.keys(probeStats)) probeStats[key] += stats[key];
+        for (const key of ['attempts', 'values', 'throws'] as const) probeStats[key] += stats[key];
         coreAssertions(scenario.name, tick, probe);
       }
       if (scenario.name === 'raw-memory')
@@ -503,7 +629,7 @@ for (const scenario of selected) {
           'RawMemory.set wins over stale materialized Memory',
         );
       world.gameTime++;
-      world.roomObjects.worker.x++;
+      required(world.roomObjects.worker).x++;
     }
     results.push({
       scenario: scenario.name,

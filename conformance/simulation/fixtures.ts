@@ -4,14 +4,31 @@
  * backend room generation). Both sides receive the same JSON input.
  */
 
-export function terrain({ walls = [], swamps = [] } = {}) {
-  const cells = Array(2500).fill('0');
+import type { BodyPart, RoomInfo, RoomObject, UserDoc } from '../../src/simulation/state.ts';
+import { required } from '../assert.ts';
+
+type Position = Pick<RoomObject, 'room' | 'x' | 'y'>;
+type ObjectOptions = Position & Omit<Partial<RoomObject>, '_id' | 'type'>;
+type CreepOptions = Omit<ObjectOptions, 'body'> & {
+  body: Array<string | (Pick<BodyPart, 'type'> & Partial<BodyPart>)>;
+};
+
+/** Backend fixture field persisted upstream in addition to the processor's source shape. */
+export interface SourceFixture extends RoomObject {
+  ticksToRegeneration: number;
+}
+
+export function terrain({
+  walls = [],
+  swamps = [],
+}: { walls?: Array<[number, number]>; swamps?: Array<[number, number]> } = {}) {
+  const cells = Array<string>(2500).fill('0');
   for (const [x, y] of walls) cells[y * 50 + x] = '1';
   for (const [x, y] of swamps) cells[y * 50 + x] = '2';
   return cells.join('');
 }
 
-export function user(id, username, extra = {}) {
+export function user(id: string, username: string, extra: Partial<UserDoc> = {}): UserDoc {
   return {
     _id: id,
     username,
@@ -28,7 +45,7 @@ export function user(id, username, extra = {}) {
 }
 
 /** NPC accounts as created by the backend (`Invader` 2, `Source Keeper` 3); never run by the runner. */
-export function npcUsers() {
+export function npcUsers(): Record<string, UserDoc> {
   return {
     2: {
       _id: '2',
@@ -51,14 +68,14 @@ export function npcUsers() {
   };
 }
 
-export function room(id, extra = {}) {
+export function room(id: string, extra: Partial<RoomInfo> = {}): RoomInfo {
   return { _id: id, status: 'normal', ...extra };
 }
 
 export function creep(
-  id,
-  { room, x, y, user, name = id, body, store = {}, ageTime = 10000, ...extra },
-) {
+  id: string,
+  { room, x, y, user, name = id, body, store = {}, ageTime = 10000, ...extra }: CreepOptions,
+): RoomObject {
   const parts = body.map((part) =>
     typeof part === 'string' ? { type: part, hits: 100 } : { hits: 100, ...part },
   );
@@ -86,7 +103,10 @@ export function creep(
   };
 }
 
-export function controller(id, { room, x, y, user, level = 1, progress = 0, ...extra }) {
+export function controller(
+  id: string,
+  { room, x, y, user, level = 1, progress = 0, ...extra }: ObjectOptions,
+): RoomObject {
   return {
     _id: id,
     type: 'controller',
@@ -105,7 +125,10 @@ export function controller(id, { room, x, y, user, level = 1, progress = 0, ...e
   };
 }
 
-export function source(id, { room, x, y, energy = 3000, ...extra }) {
+export function source(
+  id: string,
+  { room, x, y, energy = 3000, ...extra }: ObjectOptions,
+): SourceFixture {
   return {
     _id: id,
     type: 'source',
@@ -122,9 +145,9 @@ export function source(id, { room, x, y, energy = 3000, ...extra }) {
 }
 
 export function mineral(
-  id,
-  { room, x, y, mineralType = 'H', mineralAmount = 70000, density = 3, ...extra },
-) {
+  id: string,
+  { room, x, y, mineralType = 'H', mineralAmount = 70000, density = 3, ...extra }: ObjectOptions,
+): RoomObject {
   return {
     _id: id,
     type: 'mineral',
@@ -139,9 +162,9 @@ export function mineral(
   };
 }
 
-const STRUCTURES = {
+const STRUCTURES: Record<string, (o: { name?: string | undefined }) => Partial<RoomObject>> = {
   spawn: (o) => ({
-    name: o.name,
+    name: required(o.name),
     store: { energy: 300 },
     storeCapacityResource: { energy: 300 },
     hits: 5000,
@@ -216,17 +239,30 @@ const STRUCTURES = {
 };
 
 /** Structure with build.js defaults; `extra` overrides (e.g. `store`, `hits`). */
-export function structure(id, type, { room, x, y, user, ...extra }) {
-  const defaults = STRUCTURES[type]({ name: extra.name });
-  const doc = { _id: id, type, room, x, y, notifyWhenAttacked: true, ...defaults, ...extra };
+export function structure(
+  id: string,
+  type: string,
+  { room, x, y, user, ...extra }: ObjectOptions,
+): RoomObject {
+  const defaults = required(STRUCTURES[type])({ name: extra.name });
+  const doc: RoomObject = {
+    _id: id,
+    type,
+    room,
+    x,
+    y,
+    notifyWhenAttacked: true,
+    ...defaults,
+    ...extra,
+  };
   if (user !== undefined) doc.user = user;
   return doc;
 }
 
 export function constructionSite(
-  id,
-  { room, x, y, user, structureType, progress = 0, progressTotal, ...extra },
-) {
+  id: string,
+  { room, x, y, user, structureType, progress = 0, progressTotal, ...extra }: ObjectOptions,
+): RoomObject {
   return {
     _id: id,
     type: 'constructionSite',
@@ -234,16 +270,16 @@ export function constructionSite(
     x,
     y,
     user,
-    structureType,
+    structureType: required(structureType),
     progress,
-    progressTotal,
+    progressTotal: required(progressTotal),
     ...extra,
   };
 }
 
 /** Index documents by `_id`, preserving the given order (collection insertion order). */
-export function byId(...docs) {
-  const out = {};
+export function byId<T extends { _id: string }>(...docs: T[]): Record<string, T> {
+  const out: Record<string, T> = {};
   for (const doc of docs) out[doc._id] = doc;
   return out;
 }

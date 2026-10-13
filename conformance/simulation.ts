@@ -2,10 +2,10 @@
 /*
  * Differential conformance of the local `Simulation` against the pinned upstream server processes.
  *
- *   node conformance/simulation.mjs [--scenario name[,name...]] [--controlled-order] [--full]
+ *   node conformance/simulation.ts [--scenario name[,name...]] [--controlled-order] [--full]
  *
  * For every scenario the pinned engine main loop and room processor run in a child process
- * (simulation/oracle.cjs) against the pinned screeps/storage server (its own process); the local
+ * (simulation/oracle.cts) against the pinned screeps/storage server (its own process); the local
  * Simulation runs the same fixture and intents tick by tick with the oracle's runner order. Every
  * tick's world, event logs, map views, room history, room stats, processing errors and random
  * generator state are compared. Prints one JSON report.
@@ -23,11 +23,22 @@ import { fork } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { referenceRoot, verifyReferences } from './references.mjs';
-import { createComparator } from './simulation/compare.mjs';
-import { globalDivergences } from './simulation/divergences.mjs';
-import { createLocalRunner } from './simulation/local.mjs';
-import { scenarios } from './simulation/scenarios.mjs';
+import { required } from './assert.ts';
+import { referenceRoot, verifyReferences } from './references.ts';
+import { createComparator } from './simulation/compare.ts';
+import { globalDivergences } from './simulation/divergences.ts';
+import { createLocalRunner } from './simulation/local.ts';
+import { scenarios } from './simulation/scenarios.ts';
+import type {
+  CoverageCheck,
+  Options,
+  OracleResult,
+  ProcessingOrder,
+  Scenario,
+  TickRecord,
+  TimedDifference,
+} from './simulation/types.ts';
+import type { ScenarioReport } from './simulation/report.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const REFERENCES = ['engine', 'common', 'driver', 'storage'];
@@ -70,15 +81,20 @@ const METHOD = {
   ],
 };
 
-function parseArgs(argv) {
-  const options = { only: null, full: false, controlledOrder: false, allowKnownDivergences: false };
+function parseArgs(argv: string[]): Options {
+  const options: Options = {
+    only: null,
+    full: false,
+    controlledOrder: false,
+    allowKnownDivergences: false,
+  };
   for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
+    const arg = required(argv[i]);
     if (arg === '--full') options.full = true;
     else if (arg === '--controlled-order') options.controlledOrder = true;
     else if (arg === '--allow-known-divergences') options.allowKnownDivergences = true;
     else if (arg === '--scenario')
-      options.only = [...(options.only ?? []), ...argv[++i].split(',')];
+      options.only = [...(options.only ?? []), ...required(argv[++i]).split(',')];
     else if (arg.startsWith('--scenario='))
       options.only = [...(options.only ?? []), ...arg.slice(11).split(',')];
     else throw new Error(`unknown argument ${arg}`);
@@ -86,48 +102,50 @@ function parseArgs(argv) {
   return options;
 }
 
-function runOracle(scenario) {
-  return new Promise((resolvePromise) => {
-    const child = fork(resolve(here, 'simulation/oracle.cjs'), [], {
-      stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
-      execArgv: [],
-    });
-    let output = '';
-    child.stdout.on('data', (chunk) => (output += chunk));
-    child.stderr.on('data', (chunk) => (output += chunk));
-    let settled = false;
-    const settle = (result) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolvePromise(result);
-    };
-    const timer = setTimeout(() => {
-      child.kill();
-      settle({
-        error: `oracle timed out after ${ORACLE_TIMEOUT_MS} ms`,
-        ticks: [],
-        logs: [{ text: output.slice(-4000) }],
-      });
-    }, ORACLE_TIMEOUT_MS);
-    child.on('message', (message) => settle(message));
-    child.on('exit', (code) =>
-      settle({
-        error: `oracle exited with code ${code}`,
-        ticks: [],
-        logs: [{ text: output.slice(-4000) }],
-      }),
-    );
-    child.send({ type: 'run', referenceRoot, scenario: JSON.parse(JSON.stringify(scenario)) });
+function runOracle(scenario: Scenario): Promise<OracleResult> {
+  const { promise, resolve: resolvePromise } = Promise.withResolvers<OracleResult>();
+  const child = fork(resolve(here, 'simulation/oracle.cts'), [], {
+    stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+    execArgv: [],
   });
+  let output = '';
+  required(child.stdout).on('data', (chunk: Buffer) => (output += chunk.toString()));
+  required(child.stderr).on('data', (chunk: Buffer) => (output += chunk.toString()));
+  let settled = false;
+  const settle = (result: OracleResult) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    resolvePromise(result);
+  };
+  const timer = setTimeout(() => {
+    child.kill();
+    settle({
+      error: `oracle timed out after ${String(ORACLE_TIMEOUT_MS)} ms`,
+      ticks: [],
+      logs: [{ text: output.slice(-4000) }],
+    });
+  }, ORACLE_TIMEOUT_MS);
+  child.on('message', (message) => {
+    settle(message as OracleResult);
+  });
+  child.on('exit', (code) => {
+    settle({
+      error: `oracle exited with code ${String(code)}`,
+      ticks: [],
+      logs: [{ text: output.slice(-4000) }],
+    });
+  });
+  child.send({ type: 'run', referenceRoot, scenario });
+  return promise;
 }
 
-function summarizeValue(value) {
-  const text = JSON.stringify(value);
+function summarizeValue(value: unknown): unknown {
+  const text = JSON.stringify(value) as string | undefined;
   return text !== undefined && text.length > 400 ? `${text.slice(0, 400)}…` : value;
 }
 
-function evaluate(check, ticks) {
+function evaluate(check: CoverageCheck, ticks: TickRecord[]): boolean {
   try {
     return ticks.length > 0 && check(ticks) === true;
   } catch {
@@ -136,7 +154,7 @@ function evaluate(check, ticks) {
 }
 
 /** Rooms whose object processing order differs, and `*rooms*` when the room processing order differs. */
-function orderDifferences(oracleOrder, localOrder) {
+function orderDifferences(oracleOrder: ProcessingOrder, localOrder: ProcessingOrder) {
   const rooms = [];
   if (JSON.stringify(Object.keys(oracleOrder)) !== JSON.stringify(Object.keys(localOrder)))
     rooms.push('*rooms*');
@@ -147,31 +165,37 @@ function orderDifferences(oracleOrder, localOrder) {
   return rooms;
 }
 
-async function runScenario(scenario, options) {
+async function runScenario(scenario: Scenario, options: Options): Promise<ScenarioReport> {
   const oracle = await runOracle(scenario);
-  const local = [];
+  const local: TickRecord[] = [];
   const comparator = createComparator(scenario.world);
-  const differences = [];
-  const orderDiffering = [];
+  const differences: TimedDifference[] = [];
+  const orderDiffering: Array<{
+    gameTime: number;
+    room: string;
+    oracle: string[] | undefined;
+    local: string[] | undefined;
+  }> = [];
   // Tick by tick: the local tick uses the oracle tick's runner order (and, with --controlled-order, its
   // per-room processing order, translating generated ids through the pairing of earlier ticks).
   const localRunner = createLocalRunner(scenario, { controlledOrder: options.controlledOrder });
   for (let i = 0; i < Math.min(scenario.ticks.length, oracle.ticks.length); i++) {
-    local.push(localRunner.step(i, oracle.ticks[i], (id) => comparator.localIdOf(id)));
-    const localOrder = comparator.labelOrder(local[i].objectOrder);
-    for (const room of orderDifferences(oracle.ticks[i].objectOrder, localOrder)) {
-      const pick = (order) => (room === '*rooms*' ? Object.keys(order) : order[room]);
-      orderDiffering.push({
-        gameTime: oracle.ticks[i].gameTime,
+    const oracleTick = required(oracle.ticks[i]);
+    const localTick = localRunner.step(i, oracleTick, (id) => comparator.localIdOf(id));
+    local.push(localTick);
+    const localOrder = comparator.labelOrder(localTick.objectOrder);
+    for (const room of orderDifferences(oracleTick.objectOrder, localOrder)) {
+      const pick = (order: ProcessingOrder) =>
+        room === '*rooms*' ? Object.keys(order) : order[room];
+      const entry = {
+        gameTime: oracleTick.gameTime,
         room,
-        oracle: pick(oracle.ticks[i].objectOrder),
+        oracle: pick(oracleTick.objectOrder),
         local: pick(localOrder),
-      });
-    }
-    // Processing order is engine behavior (storage-defined upstream): in independent mode a differing
-    // order is itself a difference, even when it happens not to change the resulting state.
-    if (!options.controlledOrder) {
-      for (const entry of orderDiffering.filter((d) => d.gameTime === oracle.ticks[i].gameTime)) {
+      };
+      orderDiffering.push(entry);
+      // Independent order is itself engine behavior, even when it does not change state.
+      if (!options.controlledOrder) {
         differences.push({
           gameTime: entry.gameTime,
           path: `processingOrder.${entry.room}`,
@@ -180,8 +204,8 @@ async function runScenario(scenario, options) {
         });
       }
     }
-    for (const difference of comparator.compareTick(oracle.ticks[i], local[i])) {
-      differences.push({ gameTime: oracle.ticks[i].gameTime, ...difference });
+    for (const difference of comparator.compareTick(oracleTick, localTick)) {
+      differences.push({ gameTime: oracleTick.gameTime, ...difference });
     }
   }
 
@@ -196,9 +220,9 @@ async function runScenario(scenario, options) {
       oracle: divergence.oracle ? evaluate(divergence.oracle, oracle.ticks) : 'per-difference',
       local: divergence.local ? evaluate(divergence.local, local) : 'per-difference',
     },
-    differences: [],
+    differences: [] as TimedDifference[],
   }));
-  const unexplained = [];
+  const unexplained: TimedDifference[] = [];
   for (const difference of differences) {
     const index = declared.findIndex(
       (d) =>
@@ -206,7 +230,7 @@ async function runScenario(scenario, options) {
         (!d.accept || d.accept(difference)),
     );
     if (index === -1) unexplained.push(difference);
-    else divergences[index].differences.push(difference);
+    else required(divergences[index]).differences.push(difference);
   }
   const brokenDivergences = divergences.filter(
     (d) => d.differences.length && (d.assertions.oracle === false || d.assertions.local === false),
@@ -234,14 +258,14 @@ async function runScenario(scenario, options) {
           : divergences.some((d) => d.differences.length)
             ? 'divergent'
             : 'match';
-  const shown = (list) =>
+  const shown = (list: TimedDifference[]) =>
     (options.full ? list : list.slice(0, MAX_DIFFERENCES)).map((d) => ({
       gameTime: d.gameTime,
       path: d.path,
       oracle: summarizeValue(d.oracle),
       local: summarizeValue(d.local),
     }));
-  const report = {
+  const report: ScenarioReport = {
     name: scenario.name,
     status,
     description: scenario.description,
@@ -284,19 +308,21 @@ async function runScenario(scenario, options) {
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   verifyReferences(REFERENCES);
-  const pins = JSON.parse(readFileSync(resolve(here, '../reference-versions.json'), 'utf8'));
+  const pins = JSON.parse(
+    readFileSync(resolve(here, '../reference-versions.json'), 'utf8'),
+  ) as Record<string, { commit: string }>;
   if (options.only) {
     const unknown = options.only.filter((name) => !scenarios.some((s) => s.name === name));
     if (unknown.length) throw new Error(`unknown scenario(s): ${unknown.join(', ')}`);
   }
   const selected = options.only
-    ? scenarios.filter((s) => options.only.includes(s.name))
+    ? scenarios.filter((s) => required(options.only).includes(s.name))
     : scenarios;
 
-  const reports = [];
+  const reports: ScenarioReport[] = [];
   for (const scenario of selected) reports.push(await runScenario(scenario, options));
 
-  const count = (status) => reports.filter((r) => r.status === status).length;
+  const count = (status: string) => reports.filter((r) => r.status === status).length;
   const summary = {
     scenarios: reports.length,
     matched: count('match'),
@@ -316,7 +342,7 @@ async function main() {
       }
     : METHOD;
   const result = {
-    oracle: Object.fromEntries(REFERENCES.map((name) => [name, pins[name].commit])),
+    oracle: Object.fromEntries(REFERENCES.map((name) => [name, required(pins[name]).commit])),
     controlledProcessingOrder: options.controlledOrder,
     allowKnownDivergences: options.allowKnownDivergences,
     summary,
@@ -341,7 +367,14 @@ async function main() {
       : 1;
 }
 
-main().catch((error) => {
-  process.stderr.write(`${error && error.stack ? error.stack : error}\n`);
+main().catch((error: unknown) => {
+  const text =
+    error !== null &&
+    typeof error === 'object' &&
+    'stack' in error &&
+    typeof error.stack === 'string'
+      ? error.stack
+      : String(error);
+  process.stderr.write(`${text}\n`);
   process.exitCode = 2;
 });

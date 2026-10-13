@@ -4,7 +4,7 @@
  *
  * Executed unmodified from the pinned checkouts:
  *  - storage: screeps/storage `lib/index.js` start() (LokiJS database, db/queue/pubsub RPC methods), in
- *    its own process (storage-process.cjs);
+ *    its own process (storage-process.cts);
  *  - engine `src/main.js` (main loop: user and room queues, global stage, game-time increment) and
  *    `src/processor.js` (room processor loop) with everything they load (processor intents, global
  *    market/power processors, fake NPC runtime, utils);
@@ -21,25 +21,49 @@
  * Controlled nondeterminism: `Math.random` replays mulberry32 from `world.rngState` (installed before
  * lodash captures it); `Date`/`Date.now` read a clock derived from the game time being processed.
  */
-const fs = require('fs');
-const os = require('os');
-const net = require('net');
-const path = require('path');
-const util = require('util');
-const zlib = require('zlib');
-const Module = require('module');
-const { fork } = require('child_process');
-const { COLLECTIONS, createResolver, clockAt, mulberry32Next } = require('./shared.cjs');
+import type { ChildProcess } from 'node:child_process';
+import type { Shared } from './shared.cts';
+import type { ObservedWorld, OracleRequest, RawIntents, TickRecord } from './types.ts';
+import type {
+  Common,
+  Driver,
+  ModuleInternals,
+  SnapshotWorld,
+  StorageDocument,
+  TickCapture,
+  UpstreamUtils,
+} from './upstream.ts';
+import type * as Fs from 'node:fs';
+import type * as Os from 'node:os';
+import type * as Net from 'node:net';
+import type { AddressInfo } from 'node:net';
+import type * as Path from 'node:path';
+import type * as Util from 'node:util';
+import type * as Zlib from 'node:zlib';
+import type ModuleType from 'node:module';
+import type * as ChildProcesses from 'node:child_process';
+import type * as AssertHelpers from '../assert.ts';
+const { required } = require('../assert.ts') as typeof AssertHelpers;
+
+const fs = require('node:fs') as typeof Fs;
+const os = require('node:os') as typeof Os;
+const net = require('node:net') as typeof Net;
+const path = require('node:path') as typeof Path;
+const util = require('node:util') as typeof Util;
+const zlib = require('node:zlib') as typeof Zlib;
+const Module = require('node:module') as typeof ModuleType & ModuleInternals;
+const { fork } = require('node:child_process') as typeof ChildProcesses;
+const { COLLECTIONS, createResolver, clockAt, mulberry32Next } = require('./shared.cts') as Shared;
 
 // ---- controlled nondeterminism (before any upstream module is loaded) -------------------------
-const rng = { state: 0 };
+const rng: { state: number; readonly gameTime?: number | 'load' } = { state: 0 };
 // Draws made while a module is being evaluated (third-party initialization such as brace-expansion's
 // escape tokens, lazily loaded during the first tick) are not game draws; they get their own stream.
 const moduleInitRng = { state: 0x9e3779b9 };
 // SIMULATION_ORACLE_RNG_TRACE=<file>: append every draw's call site (diagnosing draw-order mismatches).
 const rngTrace = process.env.SIMULATION_ORACLE_RNG_TRACE;
 Math.random = function random() {
-  const stack = new Error().stack;
+  const stack = new Error().stack ?? '';
   const moduleInit = stack.includes('Module._compile');
   if (rngTrace) {
     const site = stack
@@ -47,43 +71,62 @@ Math.random = function random() {
       .slice(2, 5)
       .map((line) => line.trim())
       .join(' < ');
-    fs.appendFileSync(rngTrace, `${moduleInit ? 'module-init' : rng.gameTime} ${site}\n`);
+    fs.appendFileSync(rngTrace, `${String(moduleInit ? 'module-init' : rng.gameTime)} ${site}\n`);
   }
   return mulberry32Next(moduleInit ? moduleInitRng : rng);
 };
 const clock = { now: () => 0 };
 const RealDate = Date;
 class ControlledDate extends RealDate {
-  constructor(...args) {
+  constructor(
+    ...args:
+      | []
+      | [value: string | number | Date]
+      | [
+          year: number,
+          month: number,
+          date?: number,
+          hours?: number,
+          minutes?: number,
+          seconds?: number,
+          ms?: number,
+        ]
+  ) {
     if (args.length === 0) super(clock.now());
-    else super(...args);
+    else if (args.length === 1) super(args[0]);
+    else if (args.length === 2) super(args[0], args[1]);
+    else if (args.length === 3) super(args[0], args[1], args[2]);
+    else if (args.length === 4) super(args[0], args[1], args[2], args[3]);
+    else if (args.length === 5) super(args[0], args[1], args[2], args[3], args[4]);
+    else if (args.length === 6) super(args[0], args[1], args[2], args[3], args[4], args[5]);
+    else super(args[0], args[1], args[2], args[3], args[4], args[5], args[6]);
   }
-  static now() {
+  static override now() {
     return clock.now();
   }
 }
-globalThis.Date = ControlledDate;
+Reflect.set(globalThis, 'Date', ControlledDate);
 
 // ---- console capture ---------------------------------------------------------------------------
-const logs = [];
-let onLog = () => {};
-for (const level of ['log', 'info', 'warn', 'error']) {
-  console[level] = (...args) => {
+const logs: Array<{ level: string; text: string }> = [];
+let onLog: (entry: { level: string; text: string }) => void = () => {};
+for (const level of ['log', 'info', 'warn', 'error'] as const) {
+  console[level] = (...args: unknown[]) => {
     const entry = { level, text: util.format(...args) };
     logs.push(entry);
     onLog(entry);
   };
 }
 
-function installResolution(REF) {
+function installResolution(REF: string) {
   const COMMON = path.join(REF, 'common');
   const DRIVER = path.join(REF, 'driver') + path.sep;
   const ENGINE = path.join(REF, 'engine');
-  const unavailable = (what) =>
+  const unavailable = (what: string) =>
     function unavailableInOracle() {
       throw new Error(`conformance oracle: ${what} is not available to the processor oracle`);
     };
-  const stub = (name, exports) => {
+  const stub = (name: string, exports: unknown) => {
     const id = path.join(REF, 'driver', `__conformance_stub_${name}__.js`);
     const m = new Module(id);
     m.filename = id;
@@ -92,7 +135,7 @@ function installResolution(REF) {
     require.cache[id] = m;
     return id;
   };
-  const driverStubs = {
+  const driverStubs: Record<string, string> = {
     '../native/build/Release/native': stub('native', {
       version: 11,
       loadTerrain() {},
@@ -109,7 +152,13 @@ function installResolution(REF) {
     he: stub('he', { encode: unavailable('he (console escaping)') }),
   };
   const original = Module._resolveFilename;
-  Module._resolveFilename = function resolveForOracle(request, parent, isMain, options) {
+  Module._resolveFilename = function resolveForOracle(
+    this: typeof Module,
+    request,
+    parent,
+    isMain,
+    options,
+  ) {
     if (request === '@screeps/common' || request.startsWith('@screeps/common/')) {
       return original.call(
         this,
@@ -121,7 +170,8 @@ function installResolution(REF) {
     }
     const from = parent && parent.filename;
     if (from && from.startsWith(DRIVER)) {
-      if (Object.prototype.hasOwnProperty.call(driverStubs, request)) return driverStubs[request];
+      if (Object.prototype.hasOwnProperty.call(driverStubs, request))
+        return required(driverStubs[request]);
       // The driver is not npm-installed (no native build); its pure JS deps come from the engine's.
       if (!request.startsWith('.') && !path.isAbsolute(request) && !request.startsWith('node:')) {
         return original.call(this, request, parent, isMain, { paths: [ENGINE] });
@@ -132,44 +182,47 @@ function installResolution(REF) {
 }
 
 /** Loki bookkeeping (`$loki`, `meta`) is not game state; strip it from documents and history objects. */
-function stripLoki(doc) {
+function stripLoki<T>(doc: T): T {
   if (doc && typeof doc === 'object') {
-    delete doc.$loki;
-    delete doc.meta;
+    Reflect.deleteProperty(doc, '$loki');
+    Reflect.deleteProperty(doc, 'meta');
   }
   return doc;
 }
 
-function freePort() {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.on('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const { port } = server.address();
-      server.close(() => resolve(port));
+function freePort(): Promise<number> {
+  const { promise, resolve, reject } = Promise.withResolvers<number>();
+  const server = net.createServer();
+  server.on('error', reject);
+  server.listen(0, '127.0.0.1', () => {
+    const { port } = server.address() as AddressInfo;
+    server.close(() => {
+      resolve(port);
     });
   });
+  return promise;
 }
 
-function startStorage(REF, env) {
-  return new Promise((resolve, reject) => {
-    const child = fork(path.join(__dirname, 'storage-process.cjs'), [], {
-      env: { ...process.env, ...env, SIMULATION_REFERENCE_ROOT: REF },
-      stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
-    });
-    let output = '';
-    child.stdout.on('data', (chunk) => (output += chunk));
-    child.stderr.on('data', (chunk) => (output += chunk));
-    child.on('message', (message) => {
-      if (message === 'storageLaunched') resolve(child);
-    });
-    child.on('exit', (code) =>
-      reject(new Error(`storage process exited with code ${code}: ${output.slice(-2000)}`)),
-    );
+function startStorage(REF: string, env: Record<string, string>): Promise<ChildProcess> {
+  const { promise, resolve, reject } = Promise.withResolvers<ChildProcess>();
+  const child = fork(path.join(__dirname, 'storage-process.cts'), [], {
+    env: { ...process.env, ...env, SIMULATION_REFERENCE_ROOT: REF },
+    stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+    execArgv: [],
   });
+  let output = '';
+  required(child.stdout).on('data', (chunk: Buffer) => (output += chunk.toString()));
+  required(child.stderr).on('data', (chunk: Buffer) => (output += chunk.toString()));
+  child.on('message', (message) => {
+    if (message === 'storageLaunched') resolve(child);
+  });
+  child.on('exit', (code) => {
+    reject(new Error(`storage process exited with code ${String(code)}: ${output.slice(-2000)}`));
+  });
+  return promise;
 }
 
-async function run({ referenceRoot: REF, scenario }) {
+async function run({ referenceRoot: REF, scenario }: Omit<OracleRequest, 'type'>) {
   installResolution(REF);
   const world = scenario.world;
   rng.state = world.rngState >>> 0;
@@ -190,9 +243,9 @@ async function run({ referenceRoot: REF, scenario }) {
   Object.assign(process.env, storageEnv, { DRIVER_MODULE: path.join(REF, 'driver/lib/index.js') });
 
   let finished = false;
-  const ticks = [];
+  const ticks: TickRecord[] = [];
   let tick = newTickCapture();
-  function newTickCapture() {
+  function newTickCapture(): TickCapture {
     return {
       savedUsers: [],
       processedRooms: [],
@@ -202,17 +255,19 @@ async function run({ referenceRoot: REF, scenario }) {
       loopErrors: [],
     };
   }
-  function finish(error) {
+  function finish(error?: string) {
     if (finished) return;
     finished = true;
     storageChild.kill();
     fs.rmSync(dbDir, { recursive: true, force: true });
     const relevant = logs.filter((l) => l.level !== 'log' || /Error/.test(l.text)).slice(0, 50);
-    process.send({ type: 'result', error, ticks, logs: relevant }, () => process.exit(0));
+    required(process.send?.bind(process))({ type: 'result', error, ticks, logs: relevant }, () =>
+      process.exit(0),
+    );
   }
   onLog = (entry) => {
     const match = /^Error processing room (\S+?):\s*([^\n]*)/.exec(entry.text);
-    if (match) tick.roomErrors.push({ room: match[1], message: match[2] });
+    if (match) tick.roomErrors.push({ room: required(match[1]), message: required(match[2]) });
     if (
       /^(Error while main loop|'Error while main loop|Error in processor loop|Error in runner loop|Unhandled rejection)/.test(
         entry.text,
@@ -220,25 +275,27 @@ async function run({ referenceRoot: REF, scenario }) {
     ) {
       tick.loopErrors.push(entry.text.split('\n').slice(0, 3).join('\n'));
       if (/main loop/.test(entry.text))
-        finish(`upstream main loop error at game time ${gameTime}: ${entry.text.split('\n')[0]}`);
+        finish(
+          `upstream main loop error at game time ${String(gameTime)}: ${String(entry.text.split('\n')[0])}`,
+        );
     }
   };
 
   // ---- populate storage through the real common client (as backend tooling does) ------------
-  const common = require('@screeps/common');
+  const common = require('@screeps/common') as Common;
   await common.storage._connect();
   const { db, env } = common.storage;
-  const jsonCopy = (value) => JSON.parse(JSON.stringify(value));
+  const jsonCopy = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
   for (const [collection, field] of COLLECTIONS) {
     const docs = Object.values(jsonCopy(world[field] || {}));
-    if (docs.length) await db[collection].insert(docs);
+    if (docs.length) await required(db[collection]).insert(docs);
   }
   const terrainDocs = Object.keys(world.terrain).map((room) => ({
     room,
     terrain: world.terrain[room],
     type: 'terrain',
   }));
-  await db['rooms.terrain'].insert(terrainDocs);
+  await required(db['rooms.terrain']).insert(terrainDocs);
   await env.set(env.keys.GAMETIME, world.gameTime);
   await env.set(env.keys.MAIN_LOOP_MIN_DURATION, 1);
   await env.set(
@@ -258,7 +315,7 @@ async function run({ referenceRoot: REF, scenario }) {
     await env.set(env.keys.MAP_VIEW + room, JSON.stringify(view));
 
   // ---- upstream driver with observation hooks -----------------------------------------------
-  const driver = require(process.env.DRIVER_MODULE);
+  const driver = require(required(process.env.DRIVER_MODULE)) as Driver;
   const originalStatsUpdater = driver.getRoomStatsUpdater;
   driver.getRoomStatsUpdater = (room) => {
     const updater = originalStatsUpdater(room);
@@ -276,28 +333,38 @@ async function run({ referenceRoot: REF, scenario }) {
   });
   // Emitted for every object of a room in the order the processor iterates it (storage query order).
   driver.config.on('processObject', (object) => {
-    (tick.objectOrder[object.room] ??= []).push(String(object._id));
+    (tick.objectOrder[object.room] ??= []).push(object._id);
   });
 
-  async function snapshot(processedTime) {
-    const out = { gameTime };
-    for (const [collection, field] of COLLECTIONS) {
-      out[field] = {};
-      for (const doc of await db[collection].find({})) out[field][doc._id] = stripLoki(doc);
+  async function snapshot(processedTime: number) {
+    const out = { gameTime } as SnapshotWorld;
+    // The main loop awaits this stage: these read-only RPCs see one completed tick. Keep collection
+    // and document insertion order while avoiding eleven sequential TCP round trips per snapshot.
+    const documents = await Promise.all(
+      COLLECTIONS.map(([collection]) => required(db[collection]).find({})),
+    );
+    for (let index = 0; index < COLLECTIONS.length; index++) {
+      const field = required(COLLECTIONS[index])[1];
+      const indexed: Record<string, StorageDocument> = {};
+      for (const doc of required(documents[index])) indexed[doc._id] = stripLoki(doc);
+      Reflect.set(out, field, indexed);
     }
     out.activeRooms = (await env.smembers(env.keys.ACTIVE_ROOMS)) || [];
     out.roomEventLogs = {};
-    for (const [room, json] of Object.entries((await env.get(env.keys.ROOM_EVENT_LOG)) || {})) {
-      out.roomEventLogs[room] = JSON.parse(json);
+    for (const [room, json] of Object.entries(
+      ((await env.get(env.keys.ROOM_EVENT_LOG)) as Record<string, string> | null | undefined) || {},
+    )) {
+      out.roomEventLogs[room] = JSON.parse(json) as ObservedWorld['roomEventLogs'][string];
     }
     out.mapViews = {};
-    const history = {};
+    const history: TickRecord['history'] = {};
     for (const room of Object.keys(world.rooms)) {
       const view = await env.get(env.keys.MAP_VIEW + room);
-      if (view) out.mapViews[room] = JSON.parse(view);
+      if (typeof view === 'string' && view)
+        out.mapViews[room] = JSON.parse(view) as ObservedWorld['mapViews'][string];
       const data = await env.hget(env.keys.ROOM_HISTORY + room, String(processedTime));
       if (data) {
-        const objects = JSON.parse(data);
+        const objects = JSON.parse(data) as Record<string, unknown>;
         for (const id of Object.keys(objects)) stripLoki(objects[id]);
         history[room] = objects;
       }
@@ -328,13 +395,13 @@ async function run({ referenceRoot: REF, scenario }) {
     if (ticks.length >= scenario.ticks.length) finish();
   };
 
-  const utils = require(path.join(REF, 'engine/src/utils.js'));
+  const utils = require(path.join(REF, 'engine/src/utils.js')) as UpstreamUtils;
   require(path.join(REF, 'engine/src/main.js'));
   require(path.join(REF, 'engine/src/processor.js'));
 
   // ---- runner role (engine runner.js with a single runner thread) ---------------------------
   const usersQueue = driver.queue.create('users', 'read');
-  const runUser = async (userId) => {
+  const runUser = async (userId: string) => {
     const index = gameTime - world.gameTime;
     const [objects, marketOrders, userPowerCreeps] = await Promise.all([
       db['rooms.objects'].find({}),
@@ -342,7 +409,9 @@ async function run({ referenceRoot: REF, scenario }) {
       db['users.power_creeps'].find({}),
     ]);
     const resolve = createResolver({ roomObjects: objects, marketOrders, userPowerCreeps });
-    const flat = resolve((scenario.ticks[index].intents || {})[userId] || {});
+    const flat = resolve(
+      (required(scenario.ticks[index]).intents || {})[userId] || {},
+    ) as RawIntents;
     const runtimeData = {
       userObjects: {},
       roomObjects: Object.fromEntries(objects.map((o) => [o._id, o])),
@@ -351,13 +420,13 @@ async function run({ referenceRoot: REF, scenario }) {
     tick.savedUsers.push(userId);
     await driver.saveUserIntents(userId, intents);
   };
-  const runnerLoop = () => {
-    usersQueue.fetch().then((userId) => {
+  const runnerLoop = (): void => {
+    void usersQueue.fetch().then((userId) => {
       if (gameTime - world.gameTime >= scenario.ticks.length) return; // scenario over: main loop stays parked
-      runUser(userId)
-        .catch((error) =>
-          console.error('Error in runner loop:', error && error.stack ? error.stack : error),
-        )
+      void runUser(userId)
+        .catch((error: unknown) => {
+          console.error('Error in runner loop:', error instanceof Error ? error.stack : error);
+        })
         .then(() => usersQueue.markDone(userId))
         .then(runnerLoop);
     });
@@ -366,13 +435,14 @@ async function run({ referenceRoot: REF, scenario }) {
   runnerLoop();
 }
 
-process.on('message', (message) => {
+process.on('message', (payload) => {
+  const message = payload as Omit<OracleRequest, 'type'> & { type?: string };
   if (message.type !== 'run') return;
-  run(message).catch((error) => {
-    process.send(
+  void run(message).catch((error: unknown) => {
+    required(process.send?.bind(process))(
       {
         type: 'result',
-        error: error && error.stack ? error.stack : String(error),
+        error: error instanceof Error ? (error.stack ?? String(error)) : String(error),
         ticks: [],
         logs,
       },

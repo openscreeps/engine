@@ -147,7 +147,7 @@ void describe('worker pools', () => {
       for (const engine of [local, workers]) {
         for (const userId of users) {
           engine.setCode(userId, PLAYER_CODE);
-          engine.setMemory(userId, JSON.stringify({ busyMs: 150 }));
+          engine.setMemory(userId, JSON.stringify({ busyMs: 0 }));
         }
       }
       // Every process is up, so both processes of each pool receive work from the first tick.
@@ -160,6 +160,16 @@ void describe('worker pools', () => {
 
       const roomHosts = new Map<string, Set<number>>();
       for (let tick = 0; tick < 4; tick++) {
+        // Only the final worker tick measures overlap. Serial reference execution and the
+        // persistence ticks need no artificial work; they still run all player actions.
+        if (tick === 3) {
+          for (const userId of users) {
+            workers.setMemory(
+              userId,
+              JSON.stringify({ ...memoryOf(workers, userId), busyMs: 150 }),
+            );
+          }
+        }
         const expected = await local.tick();
         const actual = await workers.tick();
         assert.deepEqual(actual.simulation.errors, []);
@@ -217,7 +227,8 @@ void describe('worker pools', () => {
     );
   });
 
-  void it('fails runs of a crashed runner without saving them and restarts the player on a replacement', async () => {
+  void it('fails runs of a crashed runner without saving them and restarts the player on a replacement', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
     const log = new EventLog();
     let running: (() => void) | undefined;
     await using runners = new RunnerPool({
@@ -250,6 +261,7 @@ void describe('worker pools', () => {
     assert.deepEqual(failure.intents, { rooms: {} });
     assert.equal(memoryOf(runtime, 'u1').ticks, 1, 'the failed run saved nothing');
     await log.wait((event) => event.type === 'exited' && event.pid === crashed && event.restarting);
+    t.mock.timers.tick(1000);
 
     running = undefined;
     setBusy(runtime, 'u1', 0);
@@ -264,12 +276,13 @@ void describe('worker pools', () => {
     assert.equal(runners.status()[0]?.restarts, 1);
   });
 
-  void it('recycles runners after the restart interval and closes without leaking processes', async () => {
+  void it('recycles runners after the restart interval and closes without leaking processes', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
     const log = new EventLog();
     const runners = new RunnerPool({
       processes: 1,
       threads: 1,
-      // Real time: the restart interval is a wall-clock schedule of the supervisor.
+      // Advance only the supervisor clock; worker processes and their IPC remain real.
       restartIntervalMs: 1000,
       setup: { module: SETUP },
       onEvent: log.listener,
@@ -282,6 +295,9 @@ void describe('worker pools', () => {
       const first = await runtime.runTick(world);
       assert.equal(first.users.u1?.reset, true);
       const original = memoryOf(runtime, 'u1').pid;
+      t.mock.timers.tick(999);
+      assert.ok(!log.events.some((event) => event.type === 'recycling'));
+      t.mock.timers.tick(1);
 
       await log.wait((event) => event.type === 'recycling' && event.pid === original);
       // Idle when replaced: the old process exits at once, the replacement takes the slot.
@@ -304,7 +320,16 @@ void describe('worker pools', () => {
     assert.ok(log.pids.every((pid) => !alive(pid)));
   });
 
-  void it('retries a room whose processor crashed and reports a room that keeps crashing', async () => {
+  void it('retries a room whose processor crashed and reports a room that keeps crashing', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const advanceRestart = (event: WorkerEvent): void => {
+      if (event.type === 'exited' && event.restarting) {
+        // The exit handler installs the backoff timer after publishing this event.
+        queueMicrotask(() => {
+          t.mock.timers.tick(1000);
+        });
+      }
+    };
     const directory = mkdtempSync(join(tmpdir(), 'openscreeps-processor-'));
     try {
       const world = multiRoomWorld(3);
@@ -313,6 +338,7 @@ void describe('worker pools', () => {
 
       await using once = new ProcessorPool({
         processes: 2,
+        onEvent: advanceRestart,
         setup: {
           module: SETUP,
           data: { crashRoom: 'W2N1', crashOnceMarker: join(directory, 'crashed') },
@@ -326,6 +352,7 @@ void describe('worker pools', () => {
 
       await using always = new ProcessorPool({
         processes: 1,
+        onEvent: advanceRestart,
         setup: { module: SETUP, data: { crashRoom: 'W2N1' } },
       });
       const failing = new Simulation(world, { processors: always });

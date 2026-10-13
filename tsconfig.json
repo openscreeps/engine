@@ -19,5 +19,11 @@
     "rewriteRelativeImportExtensions": true,
     "noEmit": true
   },
-  "include": ["src/**/*.ts", "test/**/*.ts", "examples/**/*.ts"]
+  "include": [
+    "src/**/*.ts",
+    "test/**/*.ts",
+    "conformance/**/*.ts",
+    "conformance/**/*.cts",
+    "examples/**/*.ts"
+  ]
 }

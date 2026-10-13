@@ -10,8 +10,31 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { createRequire } from 'node:module';
 import { delimiter, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { referenceRoot, verifyReferences } from './references.mjs';
+import { referenceRoot, verifyReferences } from './references.ts';
 
+interface LockEntry {
+  version: string;
+  dependencies?: Record<string, string>;
+  optionalDependencies?: Record<string, string>;
+  peerDependencies?: Record<string, string>;
+  peerDependenciesMeta?: Record<string, { optional?: boolean }>;
+}
+interface PackageLock {
+  packages: Record<string, LockEntry>;
+}
+export interface NativePathFinder {
+  version: number;
+  loadTerrain(...args: unknown[]): unknown;
+  search(...args: unknown[]): unknown;
+}
+interface BuildStamp {
+  driver: string;
+  tools: Record<string, string>;
+  node: string;
+  modules: string | undefined;
+  platform: NodeJS.Platform;
+  arch: string;
+}
 const driverRoot = resolve(referenceRoot, 'driver');
 const nativeRoot = resolve(driverRoot, 'native');
 /**
@@ -29,10 +52,10 @@ const expectedVersion = 11;
 const require = createRequire(import.meta.url);
 
 /** Dependency closure of `names` from an npm v2/v3 lockfile, following npm's nested-then-hoisted lookup. */
-function lockSubset(lock, names) {
+function lockSubset(lock: PackageLock, names: readonly string[]) {
   const packages = lock.packages;
-  const selected = {};
-  const resolveFrom = (from, name) => {
+  const selected: Record<string, LockEntry> = {};
+  const resolveFrom = (from: string, name: string): string | undefined => {
     let base = from;
     for (;;) {
       const candidate = `${base ? `${base}/` : ''}node_modules/${name}`;
@@ -42,7 +65,7 @@ function lockSubset(lock, names) {
       base = index === -1 ? '' : base.slice(0, index);
     }
   };
-  const visit = (from, name, optional) => {
+  const visit = (from: string, name: string, optional: boolean): void => {
     const key = resolveFrom(from, name);
     if (!key) {
       if (optional) return;
@@ -51,8 +74,9 @@ function lockSubset(lock, names) {
       );
     }
     if (selected[key]) return;
-    selected[key] = packages[key];
     const entry = packages[key];
+    if (!entry) throw new Error(`Missing lockfile entry ${key}`);
+    selected[key] = entry;
     for (const dependency of Object.keys(entry.dependencies ?? {})) visit(key, dependency, false);
     for (const dependency of Object.keys(entry.optionalDependencies ?? {}))
       visit(key, dependency, true);
@@ -64,8 +88,10 @@ function lockSubset(lock, names) {
 }
 
 function toolchainManifest() {
-  const lock = JSON.parse(readFileSync(resolve(driverRoot, 'package-lock.json'), 'utf8'));
-  const dependencies = {};
+  const lock = JSON.parse(
+    readFileSync(resolve(driverRoot, 'package-lock.json'), 'utf8'),
+  ) as PackageLock;
+  const dependencies: Record<string, string> = {};
   for (const name of toolPackages) {
     const entry = lock.packages[`node_modules/${name}`];
     if (!entry) throw new Error(`driver package-lock.json does not pin ${name}`);
@@ -94,10 +120,9 @@ function installToolchain() {
   const lockText = `${JSON.stringify(packageLock, null, 2)}\n`;
   const installed = toolPackages.every((name) => {
     const path = resolve(toolsRoot, 'node_modules', name, 'package.json');
-    return (
-      existsSync(path) &&
-      JSON.parse(readFileSync(path, 'utf8')).version === manifest.dependencies[name]
-    );
+    if (!existsSync(path)) return false;
+    const installedPackage = JSON.parse(readFileSync(path, 'utf8')) as { version: string };
+    return installedPackage.version === manifest.dependencies[name];
   });
   const current =
     existsSync(resolve(toolsRoot, 'package.json')) &&
@@ -112,7 +137,7 @@ function installToolchain() {
   return manifest.dependencies;
 }
 
-function buildStamp(tools) {
+function buildStamp(tools: Record<string, string>): BuildStamp {
   const commit = execFileSync('git', ['rev-parse', 'HEAD'], {
     cwd: driverRoot,
     encoding: 'utf8',
@@ -165,7 +190,7 @@ export function prepareNativePathFinder() {
  * Loads the pinned driver's native path finder addon; throws (never falls back) when the pinned checkout,
  * the build, or its ABI stamp is missing or stale.
  */
-export function loadNativePathFinder() {
+export function loadNativePathFinder(): NativePathFinder {
   verifyReferences(['driver']);
   const hint =
     'run `npm run conformance:setup` (needs node-gyp prerequisites: C++ toolchain and python3)';
@@ -174,21 +199,21 @@ export function loadNativePathFinder() {
   const stamp = readStamp();
   if (!stamp)
     throw new Error(`native path finder build at ${addonPath} has no build stamp; ${hint}`);
-  const recorded = JSON.parse(stamp);
+  const recorded = JSON.parse(stamp) as BuildStamp;
   const expected = buildStamp(recorded.tools);
-  for (const key of ['driver', 'modules', 'platform', 'arch'])
+  for (const key of ['driver', 'modules', 'platform', 'arch'] as const)
     if (recorded[key] !== expected[key])
       throw new Error(
-        `native path finder was built for ${key}=${recorded[key]}, current ${key}=${expected[key]}; ${hint}`,
+        `native path finder was built for ${key}=${String(recorded[key])}, current ${key}=${String(expected[key])}; ${hint}`,
       );
-  const addon = require(addonPath);
+  const addon = require(addonPath) as NativePathFinder;
   if (
     addon.version !== expectedVersion ||
     typeof addon.search !== 'function' ||
     typeof addon.loadTerrain !== 'function'
   )
     throw new Error(
-      `unexpected native path finder binary (version ${addon.version}) at ${addonPath}`,
+      `unexpected native path finder binary (version ${String(addon.version)}) at ${addonPath}`,
     );
   return addon;
 }

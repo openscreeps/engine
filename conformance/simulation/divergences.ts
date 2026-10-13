@@ -4,9 +4,11 @@
  * remaining differences are all attributed reports `divergent`, never `match`. Scenario-specific
  * divergences (with assertions over both sides' runs) are declared on the scenario.
  */
+import type { Divergence } from './types.ts';
+
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
-export const globalDivergences = [
+export const globalDivergences: Divergence[] = [
   {
     name: 'money-log-date-representation',
     kind: 'representation',

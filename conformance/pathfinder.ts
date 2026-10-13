@@ -1,12 +1,12 @@
 // Differential conformance: src/utils/pathfinder.ts against the pinned screeps/driver path finder
 // (lib/path-finder.js glue + the compiled native/src addon), executed unmodified in this process.
 //
-//   node conformance/pathfinder.mjs [--seeds N] [--start S] [--seed S] [--handcrafted-only]
+//   node conformance/pathfinder.ts [--seeds N] [--start S] [--seed S] [--handcrafted-only]
 //                                   [--max-failures K] [--report file.json]
 //
 // Runs the handcrafted cases plus N seeded random cases (default 1000 or $PATHFINDER_SEEDS, seeds
 // S..S+N-1, default S=1); `--seed S` reruns one random case. Exits 1 on any mismatch; the native addon
-// must be built by `npm run conformance:setup` (conformance/native.mjs), otherwise the suite fails.
+// must be built by `npm run conformance:setup` (conformance/native.ts), otherwise the suite fails.
 //
 // Every case is materialized independently for both sides from one JSON spec (fresh objects, matrices,
 // proxies and callbacks), then the complete observable outcome is compared: result keys/order, path
@@ -18,19 +18,133 @@
 // Boundary: this compares the driver-level search (`driver.pathFinder.search`). The engine/runtime
 // `PathFinder.search` wrapper (empty-goal short-circuit, RoomPosition class, `PathFinder.use` register)
 // and the in-isolate native module are runtime-bridge concerns not exercised here.
+import assert from 'node:assert/strict';
 import { isDeepStrictEqual, inspect } from 'node:util';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import vm from 'node:vm';
 import { PathFinder } from '../src/utils/pathfinder.ts';
-import { loadNativePathFinder } from './native.mjs';
-import { referenceRoot } from './references.mjs';
+import type { PathFinderPosition, PathFinderTerrainRoom } from '../src/utils/pathfinder.ts';
+import { loadNativePathFinder } from './native.ts';
+import type { NativePathFinder } from './native.ts';
+import { referenceRoot } from './references.ts';
+import { required } from './assert.ts';
+
+// Specs include hostile player inputs. Descriptors stay separate from unknown runtime values:
+// coercion, proxy reads, and callback behavior must be observed without harness validation.
+type Descriptor = null | boolean | number | string | undefined | Descriptor[] | DescriptorObject;
+interface DescriptorObject {
+  [key: string]: Descriptor;
+  $?: string;
+}
+type SearchSpec = {
+  origin: Descriptor;
+  goal: Descriptor;
+  options: Descriptor;
+  argc?: number;
+  repeat?: number;
+};
+type MatrixAction = { matrix: number; density?: number; kind?: string };
+type CallbackAction =
+  | 'undefined'
+  | 'false'
+  | 'null'
+  | 'zero'
+  | 'true'
+  | 'emptyString'
+  | 'nan'
+  | 'object'
+  | 'throw'
+  | MatrixAction
+  | { nested: SearchSpec; then?: CallbackAction }
+  | { mutate: { room: string; x: number; y: number; value: number }; then?: CallbackAction };
+type CallbackDescriptor = {
+  $: 'callback';
+  sloppy?: boolean;
+  rules?: Record<string, CallbackAction>;
+  default?: CallbackAction;
+  label?: string;
+};
+type SpecialDescriptor =
+  | { $: 'undefined' | 'NaN' | 'Infinity' | '-Infinity' | '-0' | 'symbol' | 'function' }
+  | { $: 'bigint'; value: string }
+  | { $: 'valueOf'; label: string; value: Descriptor }
+  | { $: 'proxy'; label: string; target: Descriptor }
+  | { $: 'sparse'; length: number; items: Record<string, Descriptor> }
+  | { $: 'throwingGetter'; label: string; key: string; base?: Descriptor }
+  | CallbackDescriptor;
+interface Random {
+  next(): number;
+  int(lo: number, hi: number): number;
+  chance(p: number): boolean;
+  pick<T>(items: readonly T[]): T;
+}
+type TerrainStyle = 'plain' | 'sparse' | 'dense' | 'swampy' | 'mixed' | 'maze' | 'stripes';
+interface TerrainSpec {
+  seed: number;
+  style?: TerrainStyle;
+  open?: boolean;
+  rooms?: Record<
+    string,
+    { style?: TerrainStyle; fill?: [number, number, number, number, number][] }
+  >;
+}
+interface CaseSpec {
+  name: string;
+  seed?: number;
+  tags: string[];
+  spec: SearchSpec;
+  terrain: TerrainSpec;
+}
+interface MaterializedCase extends CaseSpec {
+  rooms: PathFinderTerrainRoom[];
+}
+interface NormalizedError {
+  thrown?: string;
+  class?: string | undefined;
+  message?: unknown;
+  fromCallback?: boolean;
+}
+type NormalizedResult = Record<string, unknown>;
+type SearchOutcome =
+  { ok: NormalizedResult; error?: never } | { error: NormalizedError; ok?: never };
+type ObservedRun = SearchOutcome & { log: string[] };
+interface Context {
+  log: string[];
+  depth: string;
+  run(nested: SearchSpec, label: string): SearchOutcome;
+}
+type Search = (...args: unknown[]) => unknown;
+interface Side {
+  name: string;
+  search: Search;
+  positions: { count: number };
+}
+interface DriverModule {
+  create(native: NativePathFinder): {
+    make(runtime: { RoomPosition: new (x: number, y: number, roomName: string) => Position }): void;
+    search: Search;
+  };
+  init(native: NativePathFinder, rooms: PathFinderTerrainRoom[]): void;
+}
+interface Difference {
+  at: string;
+  native: unknown;
+  port: unknown;
+}
+interface Failure extends CaseSpec {
+  difference: Difference;
+  native: ObservedRun[];
+  port: ObservedRun[];
+}
 
 // ---------------------------------------------------------------------------------------------------
 // CLI
 
-function argument(name, fallback) {
+function argument(name: string): string | undefined;
+function argument(name: string, fallback: string): string;
+function argument(name: string, fallback?: string): string | undefined {
   const index = process.argv.indexOf(name);
   if (index === -1) return fallback;
   const value = process.argv[index + 1];
@@ -55,15 +169,16 @@ if (!Number.isInteger(seedCount) || seedCount < 0 || !Number.isInteger(seedStart
 
 const native = loadNativePathFinder();
 const driverRoot = resolve(referenceRoot, 'driver');
-const driverLock = JSON.parse(readFileSync(resolve(driverRoot, 'package-lock.json'), 'utf8'));
+const driverLock = JSON.parse(readFileSync(resolve(driverRoot, 'package-lock.json'), 'utf8')) as {
+  packages: Record<string, { version: string }>;
+};
 const localRequire = createRequire(import.meta.url);
-const lodash = localRequire('lodash');
-if (lodash.VERSION !== driverLock.packages['node_modules/lodash'].version)
-  throw new Error(
-    `driver pins lodash ${driverLock.packages['node_modules/lodash'].version}, engine provides ${lodash.VERSION}`,
-  );
+const lodash = localRequire('lodash') as { VERSION: string };
+const pinnedLodashVersion = required(driverLock.packages['node_modules/lodash']).version;
+if (lodash.VERSION !== pinnedLodashVersion)
+  throw new Error(`driver pins lodash ${pinnedLodashVersion}, engine provides ${lodash.VERSION}`);
 
-function loadDriverPathFinder() {
+function loadDriverPathFinder(): DriverModule {
   const filename = resolve(driverRoot, 'lib', 'path-finder.js');
   const factory = vm.compileFunction(
     readFileSync(filename, 'utf8'),
@@ -71,11 +186,17 @@ function loadDriverPathFinder() {
     {
       filename,
     },
-  );
+  ) as (
+    exports: object,
+    require: (request: string) => unknown,
+    module: { exports: object },
+    filename: string,
+    dirname: string,
+  ) => void;
   const module = { exports: {} };
   factory(
     module.exports,
-    (request) => {
+    (request: string) => {
       if (request === 'lodash') return lodash;
       throw new Error(`driver lib/path-finder.js requested unexpected module ${request}`);
     },
@@ -83,7 +204,7 @@ function loadDriverPathFinder() {
     filename,
     resolve(driverRoot, 'lib'),
   );
-  return module.exports;
+  return module.exports as DriverModule;
 }
 const driverModule = loadDriverPathFinder();
 
@@ -92,15 +213,15 @@ const driverModule = loadDriverPathFinder();
 // process-global storage and never forgets a room, so both sides always load exactly this set.
 
 const kHalf = 127;
-function roomName(mx, my) {
+function roomName(mx: number, my: number): string {
   return (
-    (mx <= kHalf ? `W${kHalf - mx}` : `E${mx - kHalf - 1}`) +
-    (my <= kHalf ? `N${kHalf - my}` : `S${my - kHalf - 1}`)
+    (mx <= kHalf ? `W${String(kHalf - mx)}` : `E${String(mx - kHalf - 1)}`) +
+    (my <= kHalf ? `N${String(kHalf - my)}` : `S${String(my - kHalf - 1)}`)
   );
 }
-const gridRooms = [];
+const gridRooms: [number, number][] = [];
 for (let my = 126; my <= 128; ++my) for (let mx = 125; mx <= 129; ++mx) gridRooms.push([mx, my]);
-const cornerRooms = [
+const cornerRooms: [number, number][] = [
   [0, 0],
   [1, 0],
   [0, 1],
@@ -124,7 +245,7 @@ const cornerNames = cornerRooms.map(([mx, my]) => roomName(mx, my));
 // ---------------------------------------------------------------------------------------------------
 // Deterministic randomness
 
-function mulberry32(seed) {
+function mulberry32(seed: number): Random {
   let state = seed >>> 0;
   const next = () => {
     state = (state + 0x6d2b79f5) >>> 0;
@@ -133,11 +254,16 @@ function mulberry32(seed) {
     t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
-  const rng = {
+  const rng: Random = {
     next,
     int: (lo, hi) => lo + Math.floor(next() * (hi - lo + 1)),
     chance: (p) => next() < p,
-    pick: (items) => items[Math.floor(next() * items.length)],
+    pick: <T>(items: readonly T[]): T => {
+      const index = Math.floor(next() * items.length);
+      assert.ok(index in items, 'Random fixture pool must contain the selected index');
+      // Bounds are established without rejecting intentionally selected null/undefined values.
+      return items[index] as T;
+    },
   };
   return rng;
 }
@@ -146,11 +272,19 @@ function mulberry32(seed) {
 // Terrain: spec { seed, style?, open?, rooms?: { [name]: { style?, fill?: [[x1,y1,x2,y2,code]] } } }
 // open: grid perimeter left passable (searches may then touch unloaded rooms and throw upstream's error).
 
-const terrainStyles = ['plain', 'sparse', 'dense', 'swampy', 'mixed', 'maze', 'stripes'];
+const terrainStyles: TerrainStyle[] = [
+  'plain',
+  'sparse',
+  'dense',
+  'swampy',
+  'mixed',
+  'maze',
+  'stripes',
+];
 
-function roomTerrain(rng, style) {
-  const cells = new Array(2500).fill('0');
-  const set = (x, y, code) => {
+function roomTerrain(rng: Random, style: TerrainStyle): string[] {
+  const cells = new Array<string>(2500).fill('0');
+  const set = (x: number, y: number, code: string) => {
     if (x >= 0 && x < 50 && y >= 0 && y < 50) cells[y * 50 + x] = code;
   };
   switch (style) {
@@ -190,27 +324,31 @@ function roomTerrain(rng, style) {
         for (let x = 0; x < 50; ++x) if ((x + y) % rng.int(3, 5) === 0) set(x, y, '2');
       break;
     default:
-      throw new Error(`unknown terrain style ${style}`);
+      throw new Error(`unknown terrain style ${String(style)}`);
   }
   return cells;
 }
 
-function buildTerrain(spec) {
-  const rng = mulberry32(spec.seed ?? 0);
-  const rooms = new Map();
+function buildTerrain(spec: TerrainSpec): PathFinderTerrainRoom[] {
+  const rng = mulberry32(spec.seed);
+  const rooms = new Map<string, string>();
   for (const room of worldRooms) {
     const custom = spec.rooms?.[room.name] ?? {};
     const style = custom.style ?? spec.style ?? rng.pick(terrainStyles);
     const cells = roomTerrain(rng, style);
     if (!spec.open) {
       // Close the edges facing rooms outside the loaded set.
-      const loaded = (dx, dy) =>
+      const loaded = (dx: number, dy: number) =>
         worldByName.has(roomName((room.mx + dx) & 0xff, (room.my + dy) & 0xff));
+      const west = loaded(-1, 0);
+      const east = loaded(1, 0);
+      const north = loaded(0, -1);
+      const south = loaded(0, 1);
       for (let ii = 0; ii < 50; ++ii) {
-        if (!loaded(-1, 0)) cells[ii * 50] = '1';
-        if (!loaded(1, 0)) cells[ii * 50 + 49] = '1';
-        if (!loaded(0, -1)) cells[ii] = '1';
-        if (!loaded(0, 1)) cells[49 * 50 + ii] = '1';
+        if (!west) cells[ii * 50] = '1';
+        if (!east) cells[ii * 50 + 49] = '1';
+        if (!north) cells[ii] = '1';
+        if (!south) cells[49 * 50 + ii] = '1';
       }
     }
     for (const [x1, y1, x2, y2, code] of custom.fill ?? [])
@@ -229,19 +367,20 @@ function buildTerrain(spec) {
 //   {$:'sparse', length, items:{index:value}} {$:'throwingGetter', label, key, base}
 //   {$:'callback', ...}                       (see makeCallback)
 
-function describeKey(key) {
+function describeKey(key: string | symbol): string {
   return typeof key === 'symbol' ? key.toString() : key;
 }
 
-function materialize(desc, ctx) {
+function materialize(desc: Descriptor, ctx: Context): unknown {
   if (desc === null || typeof desc !== 'object') return desc;
   if (Array.isArray(desc)) return desc.map((item) => materialize(item, ctx));
   if (!('$' in desc)) {
-    const out = {};
+    const out: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(desc)) out[key] = materialize(value, ctx);
     return out;
   }
-  switch (desc.$) {
+  const special = desc as SpecialDescriptor;
+  switch (special.$) {
     case 'undefined':
       return undefined;
     case 'NaN':
@@ -257,63 +396,63 @@ function materialize(desc, ctx) {
     case 'function':
       return function value() {};
     case 'bigint':
-      return BigInt(desc.value);
+      return BigInt(special.value);
     case 'valueOf': {
-      const value = materialize(desc.value, ctx);
+      const value = materialize(special.value, ctx);
       return {
         valueOf() {
-          ctx.log.push(`valueOf ${desc.label}`);
+          ctx.log.push(`valueOf ${special.label}`);
           return value;
         },
       };
     }
     case 'proxy': {
-      const target = materialize(desc.target, ctx);
-      return new Proxy(target, {
+      const target = materialize(special.target, ctx);
+      return new Proxy(target as object, {
         get(object, key, receiver) {
-          ctx.log.push(`get ${desc.label}.${describeKey(key)}`);
-          return Reflect.get(object, key, receiver);
+          ctx.log.push(`get ${special.label}.${describeKey(key)}`);
+          return Reflect.get(object, key, receiver) as unknown;
         },
         has(object, key) {
-          ctx.log.push(`has ${desc.label}.${describeKey(key)}`);
+          ctx.log.push(`has ${special.label}.${describeKey(key)}`);
           return Reflect.has(object, key);
         },
         ownKeys(object) {
-          ctx.log.push(`ownKeys ${desc.label}`);
+          ctx.log.push(`ownKeys ${special.label}`);
           return Reflect.ownKeys(object);
         },
         getOwnPropertyDescriptor(object, key) {
-          ctx.log.push(`getOwnPropertyDescriptor ${desc.label}.${describeKey(key)}`);
+          ctx.log.push(`getOwnPropertyDescriptor ${special.label}.${describeKey(key)}`);
           return Reflect.getOwnPropertyDescriptor(object, key);
         },
       });
     }
     case 'sparse': {
-      const array = new Array(desc.length);
-      for (const [index, value] of Object.entries(desc.items))
+      const array = new Array<unknown>(special.length);
+      for (const [index, value] of Object.entries(special.items))
         array[Number(index)] = materialize(value, ctx);
       return array;
     }
     case 'throwingGetter': {
-      const base = materialize(desc.base ?? {}, ctx);
-      Object.defineProperty(base, desc.key, {
+      const base = materialize(special.base ?? {}, ctx);
+      Object.defineProperty(base, special.key, {
         enumerable: true,
         get() {
-          ctx.log.push(`throw ${desc.label}.${desc.key}`);
-          throw new RangeError(`getter ${desc.label}.${desc.key}`);
+          ctx.log.push(`throw ${special.label}.${special.key}`);
+          throw new RangeError(`getter ${special.label}.${special.key}`);
         },
       });
       return base;
     }
     case 'callback':
-      return makeCallback(desc, ctx);
+      return makeCallback(special, ctx);
     default:
       throw new Error(`unknown descriptor ${desc.$}`);
   }
 }
 
 // Cost matrix bytes for a {matrix} action: deterministic from its seed.
-function matrixBytes(seed, density) {
+function matrixBytes(seed: number, density?: number): Uint8Array<ArrayBuffer> {
   const rng = mulberry32(seed);
   const bytes = new Uint8Array(2500);
   const mode = rng.int(0, 3);
@@ -332,7 +471,7 @@ function matrixBytes(seed, density) {
 }
 
 // Returns what the callback hands back for a {matrix} action, per container kind.
-function matrixContainer(action) {
+function matrixContainer(action: MatrixAction): { _bits?: unknown } {
   const bytes = matrixBytes(action.matrix, action.density);
   switch (action.kind ?? 'u8') {
     case 'u8':
@@ -371,19 +510,25 @@ function matrixContainer(action) {
       return { _bits: shared };
     }
     default:
-      throw new Error(`unknown matrix kind ${action.kind}`);
+      throw new Error(`unknown matrix kind ${String(action.kind)}`);
   }
 }
 
 const callbackSentinel = Symbol('callback error');
 
+// Compile the unchanged sloppy-mode fixture once; each invocation still returns a fresh callback.
+const sloppyCallbackFactory = vm.compileFunction(
+  'return function () { return body(this, Array.prototype.slice.call(arguments)); }',
+  ['body'],
+) as (body: (receiver: unknown, args: unknown[]) => unknown) => Search;
+
 // {$:'callback', sloppy?, rules?:{room:action}, default?:action, label?}
 // actions: 'undefined'|'false'|'null'|'zero'|'true'|'emptyString'|'nan'|'object'|'throw'|
 //          {matrix, kind?, density?}|{nested:{origin, goal, options}, then?:action}|
 //          {mutate:{room, x, y, value}, then?:action}
-function makeCallback(desc, ctx) {
-  const returned = new Map();
-  const apply = (action, name) => {
+function makeCallback(desc: CallbackDescriptor, ctx: Context): Search {
+  const returned = new Map<string, { _bits?: unknown }>();
+  const apply = (action: CallbackAction, name: string): unknown => {
     if (typeof action === 'string') {
       switch (action) {
         case 'undefined':
@@ -403,12 +548,14 @@ function makeCallback(desc, ctx) {
         case 'object':
           return {};
         case 'throw': {
-          const error = new Error(`callback threw for ${name}`);
+          const error: Error & { [callbackSentinel]?: boolean } = new Error(
+            `callback threw for ${name}`,
+          );
           error[callbackSentinel] = true;
           throw error;
         }
         default:
-          throw new Error(`unknown callback action ${action}`);
+          throw new Error(`unknown callback action ${String(action)}`);
       }
     }
     if ('matrix' in action) {
@@ -417,22 +564,24 @@ function makeCallback(desc, ctx) {
       return container;
     }
     if ('nested' in action) {
-      const outcome = ctx.run(action.nested, `${ctx.depth + 1}`);
+      const outcome = ctx.run(action.nested, `${ctx.depth}1`);
       ctx.log.push(`nested from ${name}: ${JSON.stringify(outcome)}`);
       return apply(action.then ?? 'undefined', name);
     }
     if ('mutate' in action) {
       const { room, x, y, value } = action.mutate;
       const container = returned.get(room);
-      if (container?._bits)
-        new Uint8Array(container._bits.buffer, container._bits.byteOffset)[x * 50 + y] = value;
+      if (container?._bits) {
+        const bits = container._bits as { buffer: ArrayBufferLike; byteOffset: number };
+        new Uint8Array(bits.buffer, bits.byteOffset)[x * 50 + y] = value;
+      }
       ctx.log.push(`mutate ${room} ${container ? 'hit' : 'miss'}`);
       return apply(action.then ?? 'undefined', name);
     }
     throw new Error(`unknown callback action ${JSON.stringify(action)}`);
   };
-  const body = (receiver, args) => {
-    const name = args[0];
+  const body = (receiver: unknown, args: unknown[]): unknown => {
+    const name = args[0] as string;
     const kind =
       receiver === undefined ? 'undefined' : receiver === globalThis ? 'global' : typeof receiver;
     ctx.log.push(
@@ -442,12 +591,9 @@ function makeCallback(desc, ctx) {
   };
   if (desc.sloppy) {
     // Sloppy-mode function: an undefined receiver is observed as the global object.
-    return new Function(
-      'body',
-      'return function () { return body(this, Array.prototype.slice.call(arguments)); }',
-    )(body);
+    return sloppyCallbackFactory(body);
   }
-  return function (...args) {
+  return function (this: unknown, ...args: unknown[]) {
     return body(this, args);
   };
 }
@@ -455,30 +601,41 @@ function makeCallback(desc, ctx) {
 // ---------------------------------------------------------------------------------------------------
 // Sides
 
-class Position {
-  constructor(x, y, roomName) {
+class Position implements PathFinderPosition {
+  declare x: number;
+  declare y: number;
+  declare roomName: string;
+
+  constructor(x: number, y: number, roomName: string) {
     this.x = x;
     this.y = y;
     this.roomName = roomName;
   }
 }
 
-function normalizeError(error) {
+function normalizeError(error: unknown): NormalizedError {
   if (error === null || typeof error !== 'object') return { thrown: inspect(error) };
+  const observed = error as {
+    constructor?: { name?: string };
+    message?: unknown;
+    [callbackSentinel]?: unknown;
+  };
   return {
-    class: error.constructor?.name,
-    message: error.message,
-    fromCallback: Boolean(error[callbackSentinel]),
+    class: observed.constructor?.name,
+    message: observed.message,
+    fromCallback: Boolean(observed[callbackSentinel]),
   };
 }
 
-function normalizeResult(result, positions) {
+function normalizeResult(result: unknown, positions: { count: number }): NormalizedResult {
   if (result === null || typeof result !== 'object') return { value: inspect(result) };
-  const out = { keys: Object.keys(result) };
-  for (const key of out.keys) {
-    const value = result[key];
+  const observed = result as Record<string, unknown>;
+  const keys = Object.keys(result);
+  const out: NormalizedResult = { keys };
+  for (const key of keys) {
+    const value = observed[key];
     if (key === 'path' && Array.isArray(value)) {
-      out.path = value.map((pos) =>
+      out.path = value.map((pos: unknown) =>
         pos instanceof Position ? [pos.x, pos.y, pos.roomName] : { foreign: inspect(pos) },
       );
     } else out[key] = value;
@@ -487,7 +644,7 @@ function normalizeResult(result, positions) {
   return out;
 }
 
-function makeSide(name, search) {
+function makeSide(name: string, search: Search): Side {
   const positions = { count: 0 };
   return { name, search, positions };
 }
@@ -496,13 +653,13 @@ const ports = new PathFinder();
 const driverSearch = driverModule.create(native);
 driverSearch.make({
   RoomPosition: class RoomPosition extends Position {
-    constructor(x, y, roomName) {
+    constructor(x: number, y: number, roomName: string) {
       super(x, y, roomName);
       sides.native.positions.count++;
     }
   },
 });
-const sides = {
+const sides: { native: Side; port: Side } = {
   native: makeSide('native', (origin, goal, options) => driverSearch.search(origin, goal, options)),
   port: makeSide('port', (origin, goal, options) =>
     ports.search(origin, goal, options, (x, y, roomName) => {
@@ -512,14 +669,14 @@ const sides = {
   ),
 };
 
-function loadWorld(side, rooms) {
+function loadWorld(side: Side, rooms: PathFinderTerrainRoom[]): void {
   if (side === sides.native) driverModule.init(native, rooms);
   else ports.loadTerrain(rooms);
 }
 
 /** Runs one search spec on one side; returns a JSON-able outcome. */
-function runSearch(side, spec, log, depth) {
-  const ctx = {
+function runSearch(side: Side, spec: SearchSpec, log: string[], depth: string): SearchOutcome {
+  const ctx: Context = {
     log,
     depth,
     run: (nested, label) => runSearch(side, nested, log, label),
@@ -539,11 +696,11 @@ function runSearch(side, spec, log, depth) {
   }
 }
 
-function runCase(side, testCase) {
+function runCase(side: Side, testCase: MaterializedCase): ObservedRun[] {
   loadWorld(side, testCase.rooms);
-  const runs = [];
+  const runs: ObservedRun[] = [];
   for (let ii = 0; ii < (testCase.spec.repeat ?? 1); ++ii) {
-    const log = [];
+    const log: string[] = [];
     const outcome = runSearch(side, testCase.spec, log, '0');
     runs.push({ ...outcome, log });
   }
@@ -553,14 +710,25 @@ function runCase(side, testCase) {
 // ---------------------------------------------------------------------------------------------------
 // Case construction
 
-const U = { $: 'undefined' };
-const pos = (x, y, roomName) => ({ x, y, roomName });
-const goal = (p, range) => (range === undefined ? { pos: p } : { pos: p, range });
+const U: DescriptorObject = { $: 'undefined' };
+type PositionSpec = { x: number; y: number; roomName: string };
+type GoalSpec = { pos: PositionSpec; range?: Descriptor };
+function pos(x: number, y: number, roomName: string): PositionSpec;
+function pos(x: Descriptor, y: Descriptor, roomName: Descriptor): DescriptorObject;
+function pos(x: Descriptor, y: Descriptor, roomName: Descriptor): DescriptorObject {
+  return { x, y, roomName };
+}
+function goal(p: PositionSpec, range?: Descriptor): GoalSpec;
+function goal(p: Descriptor, range?: Descriptor): DescriptorObject;
+function goal(p: Descriptor, range?: Descriptor): DescriptorObject {
+  return range === undefined ? { pos: p } : { pos: p, range };
+}
 
-function handcrafted() {
-  const plain = { seed: 1, style: 'plain' };
-  const cases = [];
-  const add = (name, tags, spec, terrain = plain) => cases.push({ name, tags, spec, terrain });
+function handcrafted(): CaseSpec[] {
+  const plain: TerrainSpec = { seed: 1, style: 'plain' };
+  const cases: CaseSpec[] = [];
+  const add = (name: string, tags: string[], spec: SearchSpec, terrain: TerrainSpec = plain) =>
+    cases.push({ name, tags, spec, terrain });
   const base = pos(25, 25, 'W1N0');
 
   // Existing pinned observation (test/pathfinder.test.ts), on a world with E0S0/E1S0 neighbours.
@@ -736,7 +904,7 @@ function handcrafted() {
     ['valueOf', { $: 'valueOf', label: 'maxOps', value: 3 }],
     ['null', null],
     ['true', true],
-  ]) {
+  ] satisfies [string, Descriptor][]) {
     add(
       `maxOps-${label}`,
       ['maxOps', 'coercion'],
@@ -846,7 +1014,7 @@ function handcrafted() {
       'throwing-getter',
       { $: 'throwingGetter', label: 'origin', key: 'roomName', base: { x: 1, y: 1 } },
     ],
-  ])
+  ] satisfies [string, Descriptor][])
     add(`origin-${label}`, ['invalid', 'origin'], {
       origin,
       goal: pos(30, 30, 'W1N0'),
@@ -872,7 +1040,7 @@ function handcrafted() {
     ['throwing-goal', { $: 'throwingGetter', label: 'goal', key: 'y', base: { x: 1 } }],
     ['goal-error-order', [pos(3, 3, 'W1N0'), null]],
     ['array-like', { 0: pos(30, 30, 'W1N0'), length: 1 }],
-  ])
+  ] satisfies [string, Descriptor][])
     add(`goal-${label}`, ['invalid', 'goal'], { origin: base, goal: target, options: U });
   add('goal-and-origin-both-invalid', ['invalid'], {
     origin: null,
@@ -890,7 +1058,7 @@ function handcrafted() {
       'throwing-callback-getter',
       { $: 'throwingGetter', label: 'options', key: 'roomCallback', base: { maxOps: 10 } },
     ],
-  ])
+  ] satisfies [string, Descriptor][])
     add(`options-${label}`, ['invalid', 'options'], {
       origin: base,
       goal: pos(30, 30, 'W1N0'),
@@ -1008,7 +1176,7 @@ function handcrafted() {
       },
     },
   });
-  const nestedSpec = (depth) => ({
+  const nestedSpec = (depth: number): SearchSpec => ({
     origin: pos(10, 10, 'W0N0'),
     goal: goal(pos(40, 40, 'W0N0'), 1),
     options: {
@@ -1017,7 +1185,7 @@ function handcrafted() {
         depth > 0
           ? {
               $: 'callback',
-              label: `depth${depth}`,
+              label: `depth${String(depth)}`,
               rules: { W0N0: { nested: nestedSpec(depth - 1), then: { matrix: 50 + depth } } },
             }
           : { $: 'callback', label: 'leaf' },
@@ -1065,7 +1233,7 @@ function handcrafted() {
   );
 
   // World edges: (0, 0) is native `world_position_t::null()`; map coordinates wrap at 256.
-  const corner = { seed: 11, style: 'plain', open: true };
+  const corner: TerrainSpec = { seed: 11, style: 'plain', open: true };
   add(
     'world-null-origin',
     ['edge', 'world-edge'],
@@ -1135,7 +1303,7 @@ function handcrafted() {
 
 // Random cases ---------------------------------------------------------------------------------------
 
-const valuePools = {
+const valuePools: Record<string, Descriptor[]> = {
   plainCost: [U, U, 1, 2, 3, 10, 254, 255, 0, -2, '4', 2.5, { $: 'NaN' }, null],
   swampCost: [U, U, 1, 2, 5, 10, 25, 254, 0, '3', 1.9],
   maxOps: [U, U, 1, 2, 5, 20, 100, 500, 2000, 10000, 0, -1, '30', 7.7],
@@ -1145,14 +1313,14 @@ const valuePools = {
   flee: [U, false, true, 1, 0, ''],
 };
 
-function randomPosition(rng, roomPool) {
+function randomPosition(rng: Random, roomPool: readonly string[]): PositionSpec {
   const room = rng.pick(roomPool);
   const coord = () => (rng.chance(0.2) ? rng.pick([0, 1, 2, 47, 48, 49]) : rng.int(0, 49));
   return pos(coord(), coord(), room);
 }
 
-function nearbyRoom(rng, name) {
-  const room = worldByName.get(name);
+function nearbyRoom(rng: Random, name: string): string {
+  const room = required(worldByName.get(name));
   const candidates = worldRooms.filter((other) => {
     const dx = Math.min(Math.abs(other.mx - room.mx), 256 - Math.abs(other.mx - room.mx));
     const dy = Math.min(Math.abs(other.my - room.my), 256 - Math.abs(other.my - room.my));
@@ -1161,12 +1329,12 @@ function nearbyRoom(rng, name) {
   return rng.pick(candidates).name;
 }
 
-function randomCallback(rng, origin) {
+function randomCallback(rng: Random, origin: PositionSpec): Descriptor {
   const roll = rng.next();
   if (roll < 0.35) return U;
   if (roll < 0.4) return rng.pick([5, 'fn', {}, null, true]);
-  const rules = {};
-  const actions = [
+  const rules: Record<string, CallbackAction> = {};
+  const actions: (CallbackAction | (() => MatrixAction))[] = [
     'undefined',
     'undefined',
     'false',
@@ -1178,7 +1346,7 @@ function randomCallback(rng, origin) {
       kind: rng.pick(['u16', 'offset', 'short', 'array', 'dataview']),
     }),
   ];
-  const draw = () => {
+  const draw = (): CallbackAction => {
     const action = rng.pick(actions);
     return typeof action === 'function' ? action() : action;
   };
@@ -1193,15 +1361,18 @@ function randomCallback(rng, origin) {
   };
 }
 
-function randomCase(seed) {
+function randomCase(seed: number): CaseSpec {
   const rng = mulberry32(seed);
-  const tags = [];
+  const tags: string[] = [];
   const roomPool = rng.chance(0.85) ? gridNames : cornerNames;
-  const terrain = { seed: rng.int(1, 2 ** 31), open: roomPool === cornerNames || rng.chance(0.05) };
+  const terrain: TerrainSpec = {
+    seed: rng.int(1, 2 ** 31),
+    open: roomPool === cornerNames || rng.chance(0.05),
+  };
   if (rng.chance(0.3)) terrain.style = rng.pick(terrainStyles);
   const origin = randomPosition(rng, roomPool);
   const goalCount = rng.chance(0.55) ? 1 : rng.int(2, 4);
-  const goals = [];
+  const goals: (PositionSpec | GoalSpec)[] = [];
   for (let ii = 0; ii < goalCount; ++ii) {
     const target = randomPosition(rng, [
       rng.chance(0.4) ? origin.roomName : nearbyRoom(rng, origin.roomName),
@@ -1210,16 +1381,16 @@ function randomCase(seed) {
       rng.chance(0.4) ? target : goal(target, rng.pick([0, 1, 1, 2, 3, 5, 8, 15, U, -1, '2'])),
     );
   }
-  let goalValue = goalCount === 1 && rng.chance(0.6) ? goals[0] : goals;
+  let goalValue: Descriptor = goalCount === 1 && rng.chance(0.6) ? goals[0] : goals;
   if (rng.chance(0.03))
     goalValue = rng.pick([[], null, [null], { $: 'sparse', length: 2, items: { 1: goals[0] } }]);
-  const options = {};
+  const options: DescriptorObject = {};
   for (const [key, pool] of Object.entries(valuePools))
     if (rng.chance(key === 'flee' ? 0.25 : 0.3)) options[key] = rng.pick(pool);
   if (rng.chance(0.05)) options.maxOps = { $: 'valueOf', label: 'maxOps', value: rng.int(1, 3000) };
   const callback = randomCallback(rng, origin);
   if (callback !== U) options.roomCallback = callback;
-  const spec = {
+  const spec: SearchSpec = {
     origin,
     goal: goalValue,
     options: rng.chance(0.03) ? rng.pick([null, U, 5]) : options,
@@ -1231,7 +1402,7 @@ function randomCase(seed) {
       spec.options = { $: 'proxy', label: 'options', target: spec.options };
   }
   // Tags for reporting.
-  const goalRooms = goals.map((item) => (item.pos ?? item).roomName);
+  const goalRooms = goals.map((item) => ('pos' in item ? item.pos : item).roomName);
   tags.push(goalRooms.every((name) => name === origin.roomName) ? 'same-room' : 'cross-room');
   if (roomPool === cornerNames) tags.push('world-edge');
   if (goalCount > 1) tags.push('multi-goal');
@@ -1239,22 +1410,29 @@ function randomCase(seed) {
   for (const key of ['maxOps', 'maxCost', 'maxRooms', 'heuristicWeight'])
     if (key in options) tags.push(key);
   if ('plainCost' in options || 'swampCost' in options) tags.push('costs');
-  if (callback !== U) tags.push(callback?.$ === 'callback' ? 'callback' : 'callback-nonfunction');
+  if (callback !== U)
+    tags.push(
+      (callback as DescriptorObject | null | undefined)?.$ === 'callback'
+        ? 'callback'
+        : 'callback-nonfunction',
+    );
   if (goalValue !== goals && !(goalCount === 1 && goalValue === goals[0])) tags.push('invalid');
   if (spec.repeat) tags.push('repeat');
   if (terrain.open) tags.push('open-perimeter');
-  return { name: `seed-${seed}`, seed, tags, spec, terrain };
+  return { name: `seed-${String(seed)}`, seed, tags, spec, terrain };
 }
 
 // ---------------------------------------------------------------------------------------------------
 // Runner
 
-function firstDifference(a, b, path = '') {
+function firstDifference(a: unknown, b: unknown, path = ''): Difference | undefined {
   if (isDeepStrictEqual(a, b)) return undefined;
   if (a && b && typeof a === 'object' && typeof b === 'object') {
     const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+    const left = a as Record<string, unknown>;
+    const right = b as Record<string, unknown>;
     for (const key of keys) {
-      const found = firstDifference(a[key], b[key], `${path}/${key}`);
+      const found = firstDifference(left[key], right[key], `${path}/${key}`);
       if (found) return found;
     }
   }
@@ -1262,17 +1440,19 @@ function firstDifference(a, b, path = '') {
 }
 
 const cases = [...(runHandcrafted ? handcrafted() : [])];
+const handcraftedCount = cases.length;
 if (!handcraftedOnly)
   for (let seed = seedStart; seed < seedStart + seedCount; ++seed) cases.push(randomCase(seed));
 
-const tagCounts = new Map();
-const failures = [];
+const tagCounts = new Map<string, { cases: number; mismatches: number }>();
+const failures: Failure[] = [];
 let compared = 0;
 let completed = 0;
 let errored = 0;
-const errorMessages = new Map();
+const errorMessages = new Map<string, number>();
 let incomplete = 0;
-for (const testCase of cases) {
+for (const caseSpec of cases) {
+  const testCase = caseSpec as MaterializedCase;
   testCase.rooms = buildTerrain(testCase.terrain);
   const expected = runCase(sides.native, testCase);
   const actual = runCase(sides.port, testCase);
@@ -1280,13 +1460,13 @@ for (const testCase of cases) {
   for (const run of expected) {
     if (run.error) {
       errored++;
-      const message = `${run.error.class}: ${run.error.fromCallback ? '<room callback error>' : run.error.message}`;
+      const message = `${String(run.error.class)}: ${run.error.fromCallback ? '<room callback error>' : String(run.error.message)}`;
       errorMessages.set(message, (errorMessages.get(message) ?? 0) + 1);
-    } else if (run.ok?.incomplete) incomplete++;
+    } else if (run.ok.incomplete) incomplete++;
     else completed++;
   }
   const outcomeTags = expected.map((run) =>
-    run.error ? 'outcome:error' : run.ok?.incomplete ? 'outcome:incomplete' : 'outcome:complete',
+    run.error ? 'outcome:error' : run.ok.incomplete ? 'outcome:incomplete' : 'outcome:complete',
   );
   const difference = firstDifference(expected, actual);
   for (const tag of new Set([...testCase.tags, ...outcomeTags])) {
@@ -1296,7 +1476,8 @@ for (const testCase of cases) {
     tagCounts.set(tag, count);
   }
   if (difference) {
-    const { rooms: _rooms, ...rest } = testCase;
+    const rest: CaseSpec & { rooms?: PathFinderTerrainRoom[] } = { ...testCase };
+    delete rest.rooms;
     failures.push({ ...rest, difference, native: expected, port: actual });
   }
 }
@@ -1312,14 +1493,17 @@ const summary = {
   searches: compared,
   outcomes: { complete: completed, incomplete, error: errored },
   oracleErrors: Object.fromEntries([...errorMessages].sort(([, a], [, b]) => b - a)),
-  handcrafted: runHandcrafted ? handcrafted().length : 0,
+  handcrafted: handcraftedCount,
   seeds: handcraftedOnly ? 0 : { start: seedStart, count: seedCount },
   matching: cases.length - failures.length,
   mismatching: failures.length,
   tags: Object.fromEntries(
     [...tagCounts]
       .sort(([a], [b]) => a.localeCompare(b))
-      .map(([tag, count]) => [tag, `${count.cases - count.mismatches}/${count.cases} matching`]),
+      .map(([tag, count]) => [
+        tag,
+        `${String(count.cases - count.mismatches)}/${String(count.cases)} matching`,
+      ]),
   ),
 };
 const { tags, ...totals } = summary;
@@ -1331,7 +1515,7 @@ console.log(
 );
 for (const failure of failures.slice(0, maxFailures)) {
   console.log(
-    `\nMISMATCH ${failure.name}${failure.seed !== undefined ? ` (rerun: --seed ${failure.seed})` : ''} [${failure.tags.join(', ')}]`,
+    `\nMISMATCH ${failure.name}${failure.seed !== undefined ? ` (rerun: --seed ${String(failure.seed)})` : ''} [${failure.tags.join(', ')}]`,
   );
   console.log(
     inspect(
@@ -1341,6 +1525,6 @@ for (const failure of failures.slice(0, maxFailures)) {
   );
 }
 if (failures.length > maxFailures)
-  console.log(`\n... ${failures.length - maxFailures} more mismatches (--max-failures)`);
+  console.log(`\n... ${String(failures.length - maxFailures)} more mismatches (--max-failures)`);
 if (reportPath) writeFileSync(reportPath, `${JSON.stringify({ summary, failures }, null, 2)}\n`);
 if (failures.length) process.exitCode = 1;

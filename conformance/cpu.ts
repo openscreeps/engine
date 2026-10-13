@@ -3,14 +3,26 @@ import { readFileSync } from 'node:fs';
 import ivm from 'isolated-vm';
 import { getRuntimeBundle } from '../src/runtime/host/bundle.ts';
 import { buildRuntimeData, buildWorldIndex } from '../src/runtime/host/runtime-data.ts';
-import { SANDBOX_ENTRY_GLOBAL } from '../src/runtime/protocol.ts';
-import { verifyReferences } from './references.mjs';
-import { createRuntimeOracle } from './runtime/oracle.mjs';
-import { fixture, NOW } from './runtime/fixture.mjs';
+import {
+  SANDBOX_ENTRY_GLOBAL,
+  type SandboxEntry,
+  type SandboxRunMessage,
+} from '../src/runtime/protocol.ts';
+import { verifyReferences } from './references.ts';
+import { createRuntimeOracle } from './runtime/oracle.ts';
+import { fixture, NOW } from './runtime/fixture.ts';
+import { required } from './assert.ts';
+
+interface CpuRow {
+  name: string;
+  result: unknown;
+  before: number;
+  after: number;
+}
 
 // Both real player runtimes execute this identical program. Only the measured CPU clock is
 // frozen at zero; the original intent recorder and Game.cpu.getUsed implementation run unchanged.
-function player() {
+const player = `function player() {
   const creep = Game.creeps.worker;
   const rows = [];
   const record = (name, fn) => {
@@ -38,19 +50,19 @@ function player() {
   record('cancel-free-pull', () => creep.cancelOrder('pull'));
   record('notify', () => Game.notify('one'));
   record('notify-again', () => Game.notify('two'));
-  for (let i = 0; i < 52; i++) record(`market-cancel-${i}`, () => Game.market.cancelOrder('own'));
+  for (let i = 0; i < 52; i++) record(\`market-cancel-\${i}\`, () => Game.market.cancelOrder('own'));
   record('dry-run-spawn', () => Game.spawns.Spawn1.spawnCreep([MOVE], 'test', { dryRun: true }));
   record('spawn', () => Game.spawns.Spawn1.spawnCreep([MOVE], 'test'));
   record('spawn-busy', () => Game.spawns.Spawn1.spawnCreep([MOVE], 'test2'));
   // A real capped pushByName call: ten market deals may be queued each tick.
-  for (let i = 0; i < 12; i++) record(`deal-${i}`, () => Game.market.deal('order', 1, 'W1N1'));
+  for (let i = 0; i < 12; i++) record(\`deal-\${i}\`, () => Game.market.deal('order', 1, 'W1N1'));
   Memory.cpuProbe = rows;
-}
+}`;
 
 verifyReferences(['engine', 'common', 'driver']);
 const world = fixture();
-world.marketOrders.own = { ...world.marketOrders.order, _id: 'own', user: 'u1' };
-const modules = { main: `module.exports.loop = ${player.toString()};` };
+world.marketOrders.own = { ...required(world.marketOrders.order), _id: 'own', user: 'u1' };
+const modules = { main: `module.exports.loop = ${player};` };
 const oracle = await createRuntimeOracle({ now: NOW, freezeCpuTime: true });
 const isolate = new ivm.Isolate({ memoryLimit: 256 });
 let comparisons = 0;
@@ -58,7 +70,9 @@ try {
   const context = await isolate.createContext();
   await context.global.set('global', context.global.derefInto());
   await (await isolate.compileScript(await getRuntimeBundle())).run(context);
-  const entry = await context.global.get(SANDBOX_ENTRY_GLOBAL, { reference: true });
+  const entry = (await context.global.get(SANDBOX_ENTRY_GLOBAL, {
+    reference: true,
+  })) as ivm.Reference<SandboxEntry>;
   const install = entry.getSync('install', { reference: true });
   const prepare = entry.getSync('prepare', { reference: true });
   const execute = entry.getSync('execute', { reference: true });
@@ -74,7 +88,7 @@ try {
   await install.apply(undefined, []);
   const rooms = Object.entries(world.terrain);
   const terrain = new Uint8Array(rooms.length * 2500);
-  const offsets = {};
+  const offsets: Record<string, number> = {};
   rooms.forEach(([room, data], index) => {
     offsets[room] = index * 2500;
     for (let i = 0; i < 2500; i++) terrain[index * 2500 + i] = Number(data[i]);
@@ -98,16 +112,22 @@ try {
         memory,
         consoleCommands: [],
         activeSegments: [],
+        activeForeignSegment: undefined,
         segments: {},
         customObjectPrototypes: [],
         account: {
           ptr: false,
           shardLimits: {},
           shardLimitsCooldownTime: 0,
+          cpuUnlockedTime: undefined,
+          cpuSubscription: false,
           now: NOW,
           interShardLocal: '',
           interShardRemote: {},
           interShardSegment: '',
+          restrictedShard: false,
+          shardAccessTime: undefined,
+          shardAccessUnlimited: false,
         },
       },
       500,
@@ -121,32 +141,36 @@ try {
       result: { copy: true },
     });
     assert.equal(preparation, undefined);
-    const local = await execute.apply(undefined, [], {
+    const local = (await execute.apply(undefined, [], {
       timeout: 5000,
       result: { copy: true },
-    });
+    })) as SandboxRunMessage;
     assert.equal(original.type, 'done', original.error);
     assert.equal(local.type, 'done', local.error);
-    const expected = JSON.parse(original.memory).cpuProbe;
-    const actual = JSON.parse(local.memory).cpuProbe;
+    const expectedMemory = JSON.parse(original.memory) as { cpuProbe: CpuRow[] };
+    const actualMemory = JSON.parse(local.memory) as { cpuProbe: CpuRow[] };
+    const expected = expectedMemory.cpuProbe;
+    const actual = actualMemory.cpuProbe;
     assert.deepEqual(
       actual,
       expected,
-      `tick ${tick}: return codes and exact Game.cpu.getUsed before/after each action`,
+      `tick ${String(tick)}: return codes and exact Game.cpu.getUsed before/after each action`,
     );
     assert.equal(
       local.intentsCpu,
       original.intentsCpu,
-      `tick ${tick}: exact unrounded accumulator`,
+      `tick ${String(tick)}: exact unrounded accumulator`,
     );
     assert.deepEqual(
       JSON.parse(JSON.stringify(local.intentsList)),
       JSON.parse(JSON.stringify(original.intentsList)),
-      `tick ${tick}: final raw intents`,
+      `tick ${String(tick)}: final raw intents`,
     );
-    assert.equal(expected[0].before, 0, 'intent CPU resets on every tick');
-    const byName = Object.fromEntries(expected.map((row) => [row.name, row]));
-    assert.equal(byName.move.result, 0);
+    assert.equal(required(expected[0]).before, 0, 'intent CPU resets on every tick');
+    const byName: Record<string, CpuRow> = Object.fromEntries(
+      expected.map((row) => [row.name, row]),
+    );
+    assert.equal(required(byName.move).result, 0);
     for (const name of [
       'harvest',
       'say-free',
@@ -157,9 +181,9 @@ try {
       'spawn',
       'market-cancel-0',
     ]) {
-      assert.equal(byName[name].result, 0, `${name}: fixture actually succeeds`);
+      assert.equal(required(byName[name]).result, 0, `${name}: fixture actually succeeds`);
     }
-    assert.equal(byName.move.after, 0.2);
+    assert.equal(required(byName.move).after, 0.2);
     for (const name of [
       'replace-move',
       'invalid-direction',
@@ -171,21 +195,34 @@ try {
       'pull-free',
       'dry-run-spawn',
     ]) {
-      assert.equal(byName[name].after, byName[name].before, `${name}: no extra artificial cost`);
+      assert.equal(
+        required(byName[name]).after,
+        required(byName[name]).before,
+        `${name}: no extra artificial cost`,
+      );
     }
-    assert.equal(byName['cancel-move'].result, 0);
-    assert.equal(byName['cancel-missing'].result, -5);
-    assert.equal(byName['cancel-free-say'].after, byName['cancel-free-say'].before - 0.2);
-    assert.equal(byName['cancel-free-pull'].after, byName['cancel-free-pull'].before - 0.2);
-    assert.equal(byName['deal-0'].result, 0, 'deal fixture actually queues an intent');
-    assert.equal(byName['deal-10'].result, -8, 'deal cap reached');
-    assert.equal(byName['deal-10'].after, byName['deal-10'].before);
+    assert.equal(required(byName['cancel-move']).result, 0);
+    assert.equal(required(byName['cancel-missing']).result, -5);
     assert.equal(
-      byName['market-cancel-50'].result,
+      required(byName['cancel-free-say']).after,
+      required(byName['cancel-free-say']).before - 0.2,
+    );
+    assert.equal(
+      required(byName['cancel-free-pull']).after,
+      required(byName['cancel-free-pull']).before - 0.2,
+    );
+    assert.equal(required(byName['deal-0']).result, 0, 'deal fixture actually queues an intent');
+    assert.equal(required(byName['deal-10']).result, -8, 'deal cap reached');
+    assert.equal(required(byName['deal-10']).after, required(byName['deal-10']).before);
+    assert.equal(
+      required(byName['market-cancel-50']).result,
       0,
       'upstream silently accepts capped cancellation',
     );
-    assert.equal(byName['market-cancel-50'].after, byName['market-cancel-50'].before);
+    assert.equal(
+      required(byName['market-cancel-50']).after,
+      required(byName['market-cancel-50']).before,
+    );
     comparisons += expected.length + 2;
     ticks.push({
       tick: world.gameTime,
@@ -204,7 +241,7 @@ try {
         ticks,
         references: JSON.parse(
           readFileSync(new URL('../reference-versions.json', import.meta.url), 'utf8'),
-        ),
+        ) as unknown,
         clock: 'isolate cpuTime fixed at zero on both sides; intent arithmetic untouched',
         excludes: ['elapsed CPU', 'host bucket charging/recount', 'timeout and reset policy'],
       },

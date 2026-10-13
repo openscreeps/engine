@@ -4,6 +4,9 @@
  * `notify`). Both sides evolve independently from the fixture; every tick's resulting state is compared.
  */
 import { createWorldState } from '../../src/simulation/index.ts';
+import type { RoomObject, WorldState } from '../../src/simulation/state.ts';
+import type { ObservedWorld, Scenario, TickRecord, UserIntents } from './types.ts';
+import { required } from '../assert.ts';
 import {
   byId,
   constructionSite,
@@ -16,12 +19,12 @@ import {
   structure,
   terrain,
   user,
-} from './fixtures.mjs';
+} from './fixtures.ts';
 
 const CLOCK = { start: 1_700_000_000_000, step: 3_000 };
 const T0 = 1000;
 
-function world(init) {
+function world(init: Partial<WorldState>): WorldState {
   return createWorldState({
     gameTime: T0,
     shardName: '',
@@ -42,7 +45,10 @@ const DIR = {
   TOP_LEFT: 8,
 };
 
-function repeat(count, intents) {
+function repeat(
+  count: number,
+  intents: UserIntents | ((index: number) => UserIntents),
+): Scenario['ticks'] {
   return Array.from({ length: count }, (_, index) => ({
     intents: typeof intents === 'function' ? intents(index) : intents,
   }));
@@ -52,11 +58,15 @@ function repeat(count, intents) {
  * `checks` guard against vacuous matches: each must hold on the oracle's (and local) tick records,
  * proving the scenario actually exercised the transition it claims to cover.
  */
-const final = (ticks) => ticks[ticks.length - 1].world;
-const objectsOf = (world, predicate) => Object.values(world.roomObjects).filter(predicate);
-const ever = (ticks, predicate) => ticks.some((tick) => predicate(tick.world, tick));
+const final = (ticks: TickRecord[]) => required(ticks[ticks.length - 1]).world;
+const objectsOf = (world: ObservedWorld, predicate: (object: RoomObject) => unknown) =>
+  Object.values(world.roomObjects).filter(predicate);
+const ever = (
+  ticks: TickRecord[],
+  predicate: (world: ObservedWorld, tick: TickRecord) => unknown,
+) => ticks.some((tick) => predicate(tick.world, tick));
 
-const movement = {
+const movement: Scenario = {
   name: 'movement-fatigue',
   description:
     'fatigue on plain/swamp/road, carried weight, swaps, contested tiles, pull chains, room exit transfer',
@@ -140,18 +150,22 @@ const movement = {
   ],
   checks: {
     'heavy creep accumulated fatigue and still advanced': (ticks) =>
-      ever(ticks, (w) => w.roomObjects.heavy.fatigue > 0) && final(ticks).roomObjects.heavy.x > 11,
+      ever(ticks, (w) => required(required(w.roomObjects.heavy).fatigue) > 0) &&
+      required(final(ticks).roomObjects.heavy).x > 11,
     'swap completed': (ticks) =>
-      ticks[0].world.roomObjects.swapA.x === 31 && ticks[0].world.roomObjects.swapB.x === 30,
+      required(required(ticks[0]).world.roomObjects.swapA).x === 31 &&
+      required(required(ticks[0]).world.roomObjects.swapB).x === 30,
     'one contender took the tile': (ticks) =>
-      objectsOf(ticks[0].world, (o) => o.x === 31 && o.y === 35 && o.type === 'creep').length === 1,
-    'pulled creep without MOVE moved': (ticks) => final(ticks).roomObjects.pulled.y < 10,
+      objectsOf(required(ticks[0]).world, (o) => o.x === 31 && o.y === 35 && o.type === 'creep')
+        .length === 1,
+    'pulled creep without MOVE moved': (ticks) => required(final(ticks).roomObjects.pulled).y < 10,
     'exiter transferred to W0N1 and kept moving': (ticks) =>
-      final(ticks).roomObjects.exiter.room === 'W0N1' && final(ticks).roomObjects.exiter.x > 0,
+      required(final(ticks).roomObjects.exiter).room === 'W0N1' &&
+      required(final(ticks).roomObjects.exiter).x > 0,
   },
 };
 
-const economy = {
+const economy: Scenario = {
   name: 'economy-harvest-build-upgrade',
   restartLocalBefore: [2, 5],
   description:
@@ -320,26 +334,34 @@ const economy = {
   checks: {
     'spawned creep exists and moved': (ticks) => {
       const positions = ticks.flatMap((t) =>
-        objectsOf(t.world, (o) => o.name === 'Fresh' && !o.spawning).map((o) => `${o.x},${o.y}`),
+        objectsOf(t.world, (o) => o.name === 'Fresh' && !o.spawning).map(
+          (o) => `${String(o.x)},${String(o.y)}`,
+        ),
       );
       return positions.length > 1 && new Set(positions).size > 1;
     },
     'site completed into an extension that received energy': (ticks) =>
-      objectsOf(final(ticks), (o) => o.type === 'extension' && o.x === 31 && o.store.energy > 0)
-        .length === 1,
+      objectsOf(
+        final(ticks),
+        (o) => o.type === 'extension' && o.x === 31 && required(required(o.store).energy) > 0,
+      ).length === 1,
     'controller reached level 2 and GCL grew': (ticks) =>
-      final(ticks).roomObjects.ctrl.level === 2 && final(ticks).users.u1.gcl > 1000,
-    'source regenerated': (ticks) => ever(ticks, (w) => w.roomObjects.src1.energy === 3000),
-    'dropped energy was picked up': (ticks) => final(ticks).roomObjects.picker.store.energy > 0,
-    'road repaired': (ticks) => final(ticks).roomObjects.road1.hits > 4000,
+      required(final(ticks).roomObjects.ctrl).level === 2 &&
+      required(required(final(ticks).users.u1).gcl) > 1000,
+    'source regenerated': (ticks) =>
+      ever(ticks, (w) => required(w.roomObjects.src1).energy === 3000),
+    'dropped energy was picked up': (ticks) =>
+      required(required(required(final(ticks).roomObjects.picker).store).energy) > 0,
+    'road repaired': (ticks) => required(required(final(ticks).roomObjects.road1).hits) > 4000,
     'placed road site progressed': (ticks) =>
-      objectsOf(final(ticks), (o) => o.type === 'constructionSite' && o.progress > 0).length === 1,
+      objectsOf(final(ticks), (o) => o.type === 'constructionSite' && required(o.progress) > 0)
+        .length === 1,
     'notify and level-up notification persisted': (ticks) =>
       Object.keys(final(ticks).notifications).length === 2,
   },
 };
 
-const combat = {
+const combat: Scenario = {
   name: 'combat-heal-death',
   restartLocalBefore: [3],
   description:
@@ -415,7 +437,15 @@ const combat = {
         x: 22,
         y: 22,
         user: 'u1',
-        body: [...Array(10).fill('tough'), 'attack', 'attack', 'attack', 'move', 'move', 'move'],
+        body: [
+          ...Array<string>(10).fill('tough'),
+          'attack',
+          'attack',
+          'attack',
+          'move',
+          'move',
+          'move',
+        ],
       }),
       creep('ranged', {
         room: 'W2N2',
@@ -462,10 +492,13 @@ const combat = {
       objectsOf(final(ticks), (o) => o.type === 'tombstone' && o.creepId === 'defender').length ===
         1,
     'rampart absorbed ranged damage, covered creep untouched': (ticks) =>
-      ever(ticks, (w) => w.roomObjects.rampart.hits < 2000) &&
-      ticks.every((t) => t.world.roomObjects.covered.hits === 200),
+      ever(ticks, (w) => required(required(w.roomObjects.rampart).hits) < 2000) &&
+      ticks.every((t) => required(t.world.roomObjects.covered).hits === 200),
     'melee took tower damage and lost a body part': (ticks) =>
-      ever(ticks, (w) => w.roomObjects.melee?.body.some((p) => p.hits === 0)),
+      ever(ticks, (w) => {
+        const melee = w.roomObjects.melee;
+        return melee === undefined ? undefined : required(melee.body).some((p) => p.hits === 0);
+      }),
     'extension and container destroyed into ruins': (ticks) =>
       !final(ticks).roomObjects.ext &&
       !final(ticks).roomObjects.box &&
@@ -484,17 +517,25 @@ const combat = {
   },
 };
 
-function lab(id, x, y, mineralType, amount, energy = 0, labRoom = 'W3N3') {
+function lab(
+  id: string,
+  x: number,
+  y: number,
+  mineralType?: string | null,
+  amount?: number,
+  energy = 0,
+  labRoom = 'W3N3',
+): RoomObject {
   const doc = structure(id, 'lab', { room: labRoom, x, y, user: 'u1', store: { energy } });
   if (mineralType) {
-    doc.store[mineralType] = amount;
+    required(doc.store)[mineralType] = required(amount);
     doc.storeCapacityResource = { energy: 2000, [mineralType]: 3000 };
     doc.storeCapacity = null;
   }
   return doc;
 }
 
-const structures = {
+const structures: Scenario = {
   name: 'structures-production-cooldowns',
   description:
     'lab reaction cooldown and boosting, link transfer cooldown and loss, factory production cooldown, power processing until empty, ' +
@@ -642,28 +683,33 @@ const structures = {
   })),
   checks: {
     'one reaction then cooldown': (ticks) =>
-      final(ticks).roomObjects.lab3.store.OH === 5 &&
-      final(ticks).roomObjects.lab3.cooldownTime > T0,
-    'creep boosted': (ticks) => final(ticks).roomObjects.boostee.body.some((p) => p.boost === 'UH'),
+      required(required(final(ticks).roomObjects.lab3).store).OH === 5 &&
+      required(required(final(ticks).roomObjects.lab3).cooldownTime) > T0,
+    'creep boosted': (ticks) =>
+      required(required(final(ticks).roomObjects.boostee).body).some((p) => p.boost === 'UH'),
     'link transfer blocked during cooldown, resumed after': (ticks) =>
-      ticks[1].world.roomObjects.link1.store.energy === 400 &&
-      ticks[1].world.roomObjects.link1.cooldown > 0 &&
-      final(ticks).roomObjects.link1.store.energy === 0 &&
-      final(ticks).roomObjects.link2.store.energy > 400,
+      required(required(required(ticks[1]).world.roomObjects.link1).store).energy === 400 &&
+      required(required(required(ticks[1]).world.roomObjects.link1).cooldown) > 0 &&
+      required(required(final(ticks).roomObjects.link1).store).energy === 0 &&
+      required(required(required(final(ticks).roomObjects.link2).store).energy) > 400,
     'factory produced battery once': (ticks) =>
-      final(ticks).roomObjects.factory.store.battery === 50,
+      required(required(final(ticks).roomObjects.factory).store).battery === 50,
     'power processed until empty': (ticks) =>
-      final(ticks).roomObjects.pspawn.store.power === 0 && final(ticks).users.u1.power === 3,
+      required(required(final(ticks).roomObjects.pspawn).store).power === 0 &&
+      required(final(ticks).users.u1).power === 3,
     'mineral harvested under extractor cooldown': (ticks) =>
-      final(ticks).roomObjects.mineral.mineralAmount < 1000 &&
-      ever(ticks, (w) => w.roomObjects.extractor.cooldown > 0),
+      required(required(final(ticks).roomObjects.mineral).mineralAmount) < 1000 &&
+      ever(ticks, (w) => required(required(w.roomObjects.extractor).cooldown) > 0),
     'renewed and recycled': (ticks) =>
-      final(ticks).roomObjects.aged.ageTime > T0 + 100 && !final(ticks).roomObjects.scrap,
-    'wall repaired by tower': (ticks) => final(ticks).roomObjects.wall.hits > 1000,
+      required(required(final(ticks).roomObjects.aged).ageTime) > T0 + 100 &&
+      !final(ticks).roomObjects.scrap,
+    'wall repaired by tower': (ticks) =>
+      required(required(final(ticks).roomObjects.wall).hits) > 1000,
     'nuke launched once into W3N4': (ticks) =>
       objectsOf(final(ticks), (o) => o.type === 'nuke' && o.room === 'W3N4').length === 1,
     'rampart public, road destroyed': (ticks) =>
-      final(ticks).roomObjects.gate.isPublic === true && !final(ticks).roomObjects.oldRoad,
+      required(final(ticks).roomObjects.gate).isPublic === true &&
+      !final(ticks).roomObjects.oldRoad,
   },
 };
 
@@ -673,7 +719,7 @@ const MARKET_ROOMS = {
   activeRooms: ['W1N1', 'W5N5'],
 };
 
-const market = {
+const market: Scenario = {
   name: 'market-terminal-orders',
   restartLocalBefore: [1, 8],
   description:
@@ -842,17 +888,17 @@ const market = {
   ],
   checks: {
     'one of two same-terminal deals executed': (ticks) =>
-      Object.values(ticks[0].world.transactions).length === 1,
+      Object.values(required(ticks[0]).world.transactions).length === 1,
     'deal refused during terminal cooldown, created order dealt after it': (ticks) =>
-      Object.values(ticks[1].world.marketOrders).some(
+      Object.values(required(ticks[1]).world.marketOrders).some(
         (o) => o.resourceType === 'energy' && o.type === 'sell' && o.remainingAmount === 1000,
       ) &&
       Object.values(final(ticks).marketOrders).some(
         (o) => o.resourceType === 'energy' && o.type === 'sell' && o.remainingAmount === 950,
       ),
     'price changed, order extended then cancelled': (ticks) =>
-      final(ticks).marketOrders.o1.price === 1500 &&
-      ticks[1].world.marketOrders.o2.totalAmount === 1100 &&
+      required(final(ticks).marketOrders.o1).price === 1500 &&
+      required(required(ticks[1]).world.marketOrders.o2).totalAmount === 1100 &&
       !final(ticks).marketOrders.o2,
     'terminal send once, second blocked by cooldown': (ticks) =>
       Object.values(final(ticks).transactions).filter((t) => t.from === 'W5N5' && !t.order)
@@ -861,7 +907,7 @@ const market = {
   },
 };
 
-const intershard = {
+const intershard: Scenario = {
   name: 'market-intershard-resource-deal',
   description:
     'deal on an intershard resource (pixel) order: account resources move through `resources.<type>` increments',
@@ -905,7 +951,8 @@ const intershard = {
   ],
   checks: {
     'two deals executed': (ticks) =>
-      final(ticks).marketOrders.o1.remainingAmount === 5 && final(ticks).users.u2.money === 10000,
+      required(final(ticks).marketOrders.o1).remainingAmount === 5 &&
+      required(final(ticks).users.u2).money === 10000,
   },
   divergences: [
     {
@@ -925,26 +972,26 @@ const intershard = {
       oracle: (ticks) => {
         const users = final(ticks).users;
         return (
-          users.u2.resources.pixel === 10 &&
-          users.u2['resources.pixel'] === -5 &&
-          users.u1.resources.pixel === undefined &&
-          users.u1['resources.pixel'] === 5
+          required(required(users.u2).resources).pixel === 10 &&
+          required(users.u2)['resources.pixel'] === -5 &&
+          required(required(users.u1).resources).pixel === undefined &&
+          required(users.u1)['resources.pixel'] === 5
         );
       },
       local: (ticks) => {
         const users = final(ticks).users;
         return (
-          users.u2.resources.pixel === 5 &&
-          users.u1.resources.pixel === 5 &&
-          !('resources.pixel' in users.u1) &&
-          !('resources.pixel' in users.u2)
+          required(required(users.u2).resources).pixel === 5 &&
+          required(required(users.u1).resources).pixel === 5 &&
+          !('resources.pixel' in required(users.u1)) &&
+          !('resources.pixel' in required(users.u2))
         );
       },
     },
   ],
 };
 
-const power = {
+const power: Scenario = {
   name: 'power-creep-lifecycle',
   description:
     'power creep creation, upgrade and spawn, enableRoom, GENERATE_OPS with cooldown, renew at a power spawn, suicide into a tombstone ' +
@@ -1011,28 +1058,38 @@ const power = {
   ],
   checks: {
     'same-tick spawn copied level 0, next upgrade synced the room copy': (ticks) =>
-      objectsOf(ticks[1].world, (o) => o.type === 'powerCreep' && o.level === 0).length === 1 &&
-      Object.values(ticks[1].world.userPowerCreeps)[0].level === 1 &&
-      objectsOf(ticks[2].world, (o) => o.type === 'powerCreep' && o.level === 2).length === 1,
-    'room enabled for powers': (ticks) => final(ticks).roomObjects.ctrl.isPowerEnabled === true,
+      objectsOf(required(ticks[1]).world, (o) => o.type === 'powerCreep' && o.level === 0)
+        .length === 1 &&
+      required(Object.values(required(ticks[1]).world.userPowerCreeps)[0]).level === 1 &&
+      objectsOf(required(ticks[2]).world, (o) => o.type === 'powerCreep' && o.level === 2)
+        .length === 1,
+    'room enabled for powers': (ticks) =>
+      required(final(ticks).roomObjects.ctrl).isPowerEnabled === true,
     'ops generated once under cooldown': (ticks) =>
-      objectsOf(ticks[5].world, (o) => o.type === 'powerCreep' && o.store.ops > 0).length === 1 &&
-      JSON.stringify(objectsOf(ticks[4].world, (o) => o.type === 'powerCreep')[0].store) ===
-        JSON.stringify(objectsOf(ticks[5].world, (o) => o.type === 'powerCreep')[0].store),
+      objectsOf(
+        required(ticks[5]).world,
+        (o) => o.type === 'powerCreep' && required(required(o.store).ops) > 0,
+      ).length === 1 &&
+      JSON.stringify(
+        required(objectsOf(required(ticks[4]).world, (o) => o.type === 'powerCreep')[0]).store,
+      ) ===
+        JSON.stringify(
+          required(objectsOf(required(ticks[5]).world, (o) => o.type === 'powerCreep')[0]).store,
+        ),
     'suicide left a power creep tombstone, respawn refused, delete scheduled': (ticks) => {
-      const doc = Object.values(final(ticks).userPowerCreeps)[0];
+      const doc = required(Object.values(final(ticks).userPowerCreeps)[0]);
       return (
         objectsOf(final(ticks), (o) => o.type === 'tombstone' && o.powerCreepName === 'PC1')
           .length === 1 &&
         !objectsOf(final(ticks), (o) => o.type === 'powerCreep').length &&
-        doc.spawnCooldownTime > CLOCK.start &&
-        doc.deleteTime > CLOCK.start
+        required(doc.spawnCooldownTime) > CLOCK.start &&
+        required(doc.deleteTime) > CLOCK.start
       );
     },
   },
 };
 
-const npc = {
+const npc: Scenario = {
   name: 'npc-keeper-mineral-regen',
   description:
     'keeper lair spawning a keeper next to its source, keeper melee/ranged AI against a hostile until death, mineral regeneration ' +
@@ -1082,12 +1139,13 @@ const npc = {
       ).length === 1,
     'victim killed by the keeper': (ticks) => !final(ticks).roomObjects.victim,
     'mineral regenerated with re-rolled density': (ticks) =>
-      final(ticks).roomObjects.min.mineralAmount > 0 && final(ticks).roomObjects.min.density !== 1,
+      required(required(final(ticks).roomObjects.min).mineralAmount) > 0 &&
+      required(final(ticks).roomObjects.min).density !== 1,
     'random stream advanced': (ticks) => final(ticks).rngState !== 0x2545f491,
   },
 };
 
-const decay = {
+const decay: Scenario = {
   name: 'decay-and-downgrade',
   description:
     'road/rampart/container decay to destruction, dropped energy decay, tombstone and ruin expiry dropping resources, controller ' +
@@ -1201,18 +1259,23 @@ const decay = {
     'road, rampart and container decayed away': (ticks) =>
       ['road', 'rampart', 'container'].every((id) => !final(ticks).roomObjects[id]),
     'dropped energy decayed': (ticks) =>
-      ever(ticks, (w) => w.roomObjects.drop && w.roomObjects.drop.energy < 1500),
+      ever(ticks, (w) => w.roomObjects.drop && required(w.roomObjects.drop.energy) < 1500),
     'tombstone and ruin expired': (ticks) =>
       !final(ticks).roomObjects.grave && !final(ticks).roomObjects.remains,
-    'controller downgraded': (ticks) => final(ticks).roomObjects.ctrl.level === 1,
-    'portal destabilised': (ticks) =>
-      final(ticks).roomObjects.portal.unstableDate === null &&
-      final(ticks).roomObjects.portal.decayTime > T0,
+    'controller downgraded': (ticks) => required(final(ticks).roomObjects.ctrl).level === 1,
+    'portal destabilised': (ticks) => {
+      const portal = required(final(ticks).roomObjects.portal);
+      return (
+        portal.unstableDate === null &&
+        typeof portal.decayTime === 'number' &&
+        portal.decayTime > T0
+      );
+    },
     'power bank expired': (ticks) => !final(ticks).roomObjects.bank,
   },
 };
 
-const controllers = {
+const controllers: Scenario = {
   name: 'controller-claim-reserve-attack',
   description:
     'claim with GCL room count, reservation growth, attackController blocking upgrades and safe mode, signing with wall-clock datetime, ' +
@@ -1312,21 +1375,22 @@ const controllers = {
   ],
   checks: {
     'neutral claimed and signed': (ticks) =>
-      final(ticks).roomObjects.neutral.user === 'u1' &&
-      final(ticks).roomObjects.neutral.sign?.text === 'mine now',
+      required(final(ticks).roomObjects.neutral).user === 'u1' &&
+      required(final(ticks).roomObjects.neutral).sign?.text === 'mine now',
     'remote reserved and growing': (ticks) =>
-      final(ticks).roomObjects.remote.reservation?.user === 'u2',
-    'home attacked: upgrade blocked': (ticks) => final(ticks).roomObjects.home.upgradeBlocked > T0,
+      required(final(ticks).roomObjects.remote).reservation?.user === 'u2',
+    'home attacked: upgrade blocked': (ticks) =>
+      required(required(final(ticks).roomObjects.home).upgradeBlocked) > T0,
     'safe mode generated': (ticks) =>
-      ever(ticks, (w) => w.roomObjects.home.safeModeAvailable === 2),
+      ever(ticks, (w) => required(w.roomObjects.home).safeModeAvailable === 2),
     'outpost unclaimed and rooms list updated': (ticks) =>
-      !final(ticks).roomObjects.outpost.user &&
-      !final(ticks).users.u1.rooms.includes('W6N7') &&
-      final(ticks).users.u1.rooms.includes('W8N7'),
+      !required(final(ticks).roomObjects.outpost).user &&
+      !required(required(final(ticks).users.u1).rooms).includes('W6N7') &&
+      required(required(final(ticks).users.u1).rooms).includes('W8N7'),
   },
 };
 
-const flags = {
+const flags: Scenario = {
   name: 'room-intents-flags',
   description:
     'flag creation/removal through room intents, a second user creating flags in a room without flag documents in the same tick ' +
@@ -1407,12 +1471,14 @@ const flags = {
   ],
   checks: {
     'flags created with escaped name': (ticks) =>
-      Object.values(ticks[0].world.flags).some((f) => f.user === 'u1' && /Home/.test(f.data)),
+      Object.values(required(ticks[0]).world.flags).some(
+        (f) => f.user === 'u1' && /Home/.test(f.data),
+      ),
     'construction site placed then removed': (ticks) =>
-      objectsOf(ticks[0].world, (o) => o.type === 'constructionSite').length === 1 &&
+      objectsOf(required(ticks[0]).world, (o) => o.type === 'constructionSite').length === 1 &&
       objectsOf(final(ticks), (o) => o.type === 'constructionSite').length === 0,
     'concurrent first flags aborted the room that tick': (ticks) =>
-      ticks[1].roomErrors.some((e) => e.room === 'W2N1'),
+      required(ticks[1]).roomErrors.some((e) => e.room === 'W2N1'),
   },
 };
 
@@ -1423,7 +1489,7 @@ const flags = {
  * iterates world insertion order and queues rooms FIFO. These scenarios show the observable effect in
  * the default (independent) mode; `--controlled-order` replays the oracle's order and must match.
  */
-const orderObjects = {
+const orderObjects: Scenario = {
   name: 'order-same-tick-downgrade-rampart',
   description:
     'controller downgrades in the same tick a rampart reads the controller level for its hitsMax: the result depends on which ' +
@@ -1450,13 +1516,13 @@ const orderObjects = {
   ticks: repeat(3, {}),
   checks: {
     'controller downgraded on the first tick': (ticks) =>
-      ticks[0].world.roomObjects.ctrl.level === 1,
+      required(required(ticks[0]).world.roomObjects.ctrl).level === 1,
     'rampart hitsMax follows the level-1 controller by the end': (ticks) =>
-      final(ticks).roomObjects.wall.hitsMax === 0,
+      required(final(ticks).roomObjects.wall).hitsMax === 0,
   },
 };
 
-const orderRooms = {
+const orderRooms: Scenario = {
   name: 'order-rooms-random-draws',
   description:
     'two rooms regenerate low-density minerals in the same tick; each re-roll draws from the shared random stream, so the ' +
@@ -1496,11 +1562,11 @@ const orderRooms = {
   ticks: repeat(2, {}),
   checks: {
     'both minerals re-rolled their density on the first tick': (ticks) =>
-      ticks[0].world.roomObjects.mineralA.density !== 1 &&
-      ticks[0].world.roomObjects.mineralB.density !== 1,
+      required(required(ticks[0]).world.roomObjects.mineralA).density !== 1 &&
+      required(required(ticks[0]).world.roomObjects.mineralB).density !== 1,
   },
 };
-const construction = {
+const construction: Scenario = {
   name: 'construction-placement-rules',
   description:
     'createConstructionSite acceptance: controller structure limits counting sites, terrain walls, room edges and exit ' +
@@ -1539,7 +1605,7 @@ const construction = {
       }),
       structure('spawn1', 'spawn', { room: 'W1N1', x: 20, y: 20, user: 'u1', name: 'Spawn1' }),
       ...[0, 1, 2, 3].map((i) =>
-        structure(`ext${i}`, 'extension', { room: 'W1N1', x: 30 + i, y: 20, user: 'u1' }),
+        structure(`ext${String(i)}`, 'extension', { room: 'W1N1', x: 30 + i, y: 20, user: 'u1' }),
       ),
       constructionSite('extSite', {
         room: 'W1N1',
@@ -1607,7 +1673,10 @@ const construction = {
   ],
   checks: {
     'some sites accepted and some refused': (ticks) => {
-      const sites = objectsOf(ticks[0].world, (o) => o.type === 'constructionSite').length;
+      const sites = objectsOf(
+        required(ticks[0]).world,
+        (o) => o.type === 'constructionSite',
+      ).length;
       return sites > 2 && sites < 17;
     },
     'rampart over the spawn was built to completion': (ticks) =>
@@ -1617,7 +1686,7 @@ const construction = {
   },
 };
 
-const spawning = {
+const spawning: Scenario = {
   name: 'spawning-energy-directions-blocking',
   restartLocalBefore: [4, 12],
   description:
@@ -1705,8 +1774,8 @@ const spawning = {
   ],
   checks: {
     'energy drawn from the listed extension first': (ticks) =>
-      ticks[0].world.roomObjects.ext2.store.energy === 0 &&
-      ticks[0].world.roomObjects.ext1.store.energy === 50,
+      required(required(required(ticks[0]).world.roomObjects.ext2).store).energy === 0 &&
+      required(required(required(ticks[0]).world.roomObjects.ext1).store).energy === 50,
     'Big spawned below the spawn after the direction change': (ticks) =>
       objectsOf(final(ticks), (o) => o.name === 'Big' && !o.spawning && o.y === 21).length === 1,
     'Tiny waited for the blocked exit': (ticks) =>
@@ -1720,7 +1789,7 @@ const spawning = {
   },
 };
 
-const nuke = {
+const nuke: Scenario = {
   name: 'nuke-landing',
   description:
     'a nuke landing next tick cancels spawning intents, kills every creep without tombstones, damages structures in range ' +
@@ -1814,16 +1883,21 @@ const nuke = {
     'spawn in range destroyed, rampart absorbed for the tower': (ticks) =>
       !final(ticks).roomObjects.spawn1 &&
       final(ticks).roomObjects.tower &&
-      final(ticks).roomObjects.shield.hits < 6000000,
-    'sites and drops cleared, safe mode cancelled': (ticks) =>
-      !final(ticks).roomObjects.site &&
-      !final(ticks).roomObjects.drop &&
-      !(final(ticks).roomObjects.ctrl.safeMode > T0 + 3),
+      required(required(final(ticks).roomObjects.shield).hits) < 6000000,
+    'sites and drops cleared, safe mode cancelled': (ticks) => {
+      const state = final(ticks);
+      const safeMode = required(state.roomObjects.ctrl).safeMode;
+      return (
+        !state.roomObjects.site &&
+        !state.roomObjects.drop &&
+        !(typeof safeMode === 'number' && safeMode > T0 + 3)
+      );
+    },
     'nuke removed': (ticks) => !final(ticks).roomObjects.nuke,
   },
 };
 
-const highway = {
+const highway: Scenario = {
   name: 'highway-power-bank-deposit',
   description:
     'attacking a power bank with hit-back until it breaks into power, deposit harvesting with growing cooldown',
@@ -1857,7 +1931,7 @@ const highway = {
         x: 24,
         y: 24,
         user: 'u1',
-        body: [...Array(10).fill('attack'), ...Array(10).fill('move')],
+        body: [...Array<string>(10).fill('attack'), ...Array<string>(10).fill('move')],
       }),
       creep('healer', { room: 'W10N10', x: 23, y: 23, user: 'u1', body: ['heal', 'heal', 'move'] }),
       {
@@ -1876,7 +1950,7 @@ const highway = {
         x: 41,
         y: 41,
         user: 'u1',
-        body: [...Array(5).fill('work'), 'carry', 'carry', 'move'],
+        body: [...Array<string>(5).fill('work'), 'carry', 'carry', 'move'],
       }),
     ),
   }),
@@ -1897,14 +1971,14 @@ const highway = {
           (o.type === 'ruin' && o.store?.power),
       ).length >= 1,
     'hit-back damaged the attacker': (ticks) =>
-      ever(ticks, (w) => w.roomObjects.hitter && w.roomObjects.hitter.hits < 2000),
+      ever(ticks, (w) => w.roomObjects.hitter && required(w.roomObjects.hitter.hits) < 2000),
     'deposit harvested repeatedly': (ticks) =>
-      final(ticks).roomObjects.deposit.harvested === 140 &&
-      final(ticks).roomObjects.digger.store.metal === 40,
+      required(final(ticks).roomObjects.deposit).harvested === 140 &&
+      required(required(final(ticks).roomObjects.digger).store).metal === 40,
   },
 };
 
-const safeModeBoosts = {
+const safeModeBoosts: Scenario = {
   name: 'safe-mode-boosts-labs',
   description:
     'hostile actions blocked during safe mode while the owner acts, boosted harvest/upgrade/attack, unboost into the lab ' +
@@ -1990,27 +2064,29 @@ const safeModeBoosts = {
         u2: { raider: { attack: { id: 'guard', x: 30, y: 30 } } },
       },
     },
-    ...repeat(4, (index) => ({
+    ...repeat(4, () => ({
       u1: { miner: { harvest: { id: 'src' } }, guard: { attack: { id: 'raider', x: 31, y: 31 } } },
       u2: { raider: { attack: { id: 'guard', x: 30, y: 30 } } },
     })),
   ],
   checks: {
     'raider blocked during safe mode, boosted guard hits harder': (ticks) =>
-      ticks.slice(0, 3).every((t) => t.world.roomObjects.guard.hits === 300) &&
-      ticks[0].world.roomObjects.raider.hits === 510,
+      ticks.slice(0, 3).every((t) => required(t.world.roomObjects.guard).hits === 300) &&
+      required(required(ticks[0]).world.roomObjects.raider).hits === 510,
     'boosted harvest yields more than plain parts': (ticks) =>
-      ticks[0].world.roomObjects.miner.store.energy === 8,
+      required(required(required(ticks[0]).world.roomObjects.miner).store).energy === 8,
     'unboost cleared boosts and put the lab on cooldown': (ticks) =>
-      final(ticks).roomObjects.boosted.body.every((p) => !p.boost) &&
-      ticks[0].world.roomObjects.labX.cooldownTime > T0,
+      required(required(final(ticks).roomObjects.boosted).body).every((p) => !p.boost) &&
+      required(required(required(ticks[0]).world.roomObjects.labX).cooldownTime) > T0,
     'reverse reaction moved components out of the OH lab': (ticks) =>
-      ticks[0].world.roomObjects.labR.store.OH === 95 &&
-      Object.keys(ticks[0].world.roomObjects.labO.store).some((k) => k !== 'energy'),
+      required(required(required(ticks[0]).world.roomObjects.labR).store).OH === 95 &&
+      Object.keys(required(required(required(ticks[0]).world.roomObjects.labO).store)).some(
+        (k) => k !== 'energy',
+      ),
   },
 };
 
-const logistics = {
+const logistics: Scenario = {
   name: 'logistics-edge-cases',
   description:
     'withdraw from tombstones, ruins and a hostile storage under a rampart, transfer to another player creep, over-capacity ' +
@@ -2139,20 +2215,21 @@ const logistics = {
   ],
   checks: {
     'protected storage withheld energy': (ticks) =>
-      final(ticks).roomObjects.vault.store.energy === 5000,
+      required(required(final(ticks).roomObjects.vault).store).energy === 5000,
     'looted tombstone and ruin': (ticks) =>
-      final(ticks).roomObjects.looter.store.H === 10 &&
-      final(ticks).roomObjects.looter.store.energy > 0,
+      required(required(final(ticks).roomObjects.looter).store).H === 10 &&
+      required(required(required(final(ticks).roomObjects.looter).store).energy) > 0,
     'transfer to another player creep capped by capacity': (ticks) =>
-      ticks[0].world.roomObjects.receiver.store.energy === 50,
+      required(required(required(ticks[0]).world.roomObjects.receiver).store).energy === 50,
     'drop on a full container overflowed to the floor': (ticks) =>
-      final(ticks).roomObjects.box.store.energy === 2000 &&
-      objectsOf(ticks[0].world, (o) => o.type === 'energy' && o.x === 25).length === 1,
-    'partial pickup': (ticks) => ticks[0].world.roomObjects.gleaner.store.energy === 50,
+      required(required(final(ticks).roomObjects.box).store).energy === 2000 &&
+      objectsOf(required(ticks[0]).world, (o) => o.type === 'energy' && o.x === 25).length === 1,
+    'partial pickup': (ticks) =>
+      required(required(required(ticks[0]).world.roomObjects.gleaner).store).energy === 50,
   },
 };
 
-const borders = {
+const borders: Scenario = {
   name: 'portals-and-borders',
   description:
     'stepping onto an intra-shard portal, an exit into a closed (out of borders) room, moving onto a novice-area exit',
@@ -2186,13 +2263,13 @@ const borders = {
   })),
   checks: {
     'portal moved the creep to its destination': (ticks) =>
-      ever(ticks, (w) => w.roomObjects.jumper.room === 'W9N9'),
+      ever(ticks, (w) => required(w.roomObjects.jumper).room === 'W9N9'),
     'walker never entered the closed room': (ticks) =>
-      ticks.every((t) => t.world.roomObjects.walker.room === 'W6N1'),
+      ticks.every((t) => required(t.world.roomObjects.walker).room === 'W6N1'),
   },
 };
 
-const invaderCore = {
+const invaderCore: Scenario = {
   name: 'invader-core-reservation',
   description:
     'a level-0 invader core reserving a neutral controller each tick, then attacking another reservation',
@@ -2247,14 +2324,19 @@ const invaderCore = {
   ticks: repeat(4, {}),
   checks: {
     'core reserved the free controller': (ticks) =>
-      final(ticks).roomObjects.free.reservation?.user === '2',
-    'core attacked the foreign reservation': (ticks) =>
-      final(ticks).roomObjects.taken.reservation?.endTime < T0 + 1000 ||
-      final(ticks).roomObjects.taken.reservation?.user === '2',
+      required(final(ticks).roomObjects.free).reservation?.user === '2',
+    'core attacked the foreign reservation': (ticks) => {
+      const reservation = required(final(ticks).roomObjects.taken).reservation;
+      return (
+        reservation !== undefined &&
+        reservation !== null &&
+        (reservation.endTime < T0 + 1000 || reservation.user === '2')
+      );
+    },
   },
 };
 
-export const scenarios = [
+export const scenarios: Scenario[] = [
   movement,
   economy,
   combat,

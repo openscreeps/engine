@@ -1,8 +1,8 @@
-// These functions are serialized verbatim as player modules for BOTH engines. All observation
+// These JavaScript function sources execute verbatim as player modules for BOTH engines. All observation
 // construction happens inside the player realm; the adapter cannot manufacture API results.
-export function playerModules(loop) {
+export function playerModules(loop: string) {
   return {
-    main: `let state = 123456789; Math.random = () => { state = (Math.imul(state, 1664525) + 1013904223) >>> 0; return state / 4294967296; }; Date.now = () => 1700000000000; const kit = (${probeKit.toString()})(); module.exports.loop = ${loop.toString()};`,
+    main: `let state = 123456789; Math.random = () => { state = (Math.imul(state, 1664525) + 1013904223) >>> 0; return state / 4294967296; }; Date.now = () => 1700000000000; const kit = (${probeKit})(); module.exports.loop = ${loop};`,
     helper: 'global.helperLoads = (global.helperLoads || 0) + 1; module.exports = {answer: 42};',
     binary: { binary: 'AAECA/8=' },
   };
@@ -11,7 +11,7 @@ export function playerModules(loop) {
 // Lossless JSON-safe observation encoding shared by the core API probes. Keeps undefined, holes,
 // NaN/Infinity/-0, functions, typed arrays, prototypes and exception classes distinguishable, so
 // JSON transport of Memory cannot collapse distinct upstream/local results into equal leaves.
-export function probeKit() {
+export const probeKit = `function probeKit() {
   const checksum = (values) => {
     let hash = 0;
     for (let i = 0; i < values.length; i++) hash = (Math.imul(hash, 31) + (values[i] | 0)) | 0;
@@ -83,9 +83,9 @@ export function probeKit() {
     }
   }
   return { describe, attempt };
-}
+}`;
 
-export function gameplay() {
+export const gameplay = `function gameplay() {
   const attempt = (fn) => {
     try {
       return fn();
@@ -121,7 +121,7 @@ export function gameplay() {
       pickup: [null],
       pull: [null],
     }))
-      add(`precedence/${name}/${action}`, () => creep[action](...args));
+      add(\`precedence/\${name}/\${action}\`, () => creep[action](...args));
   }
   for (const [name, fn] of Object.entries({
     harvestSource: () => c.harvest(source),
@@ -185,7 +185,7 @@ export function gameplay() {
     serializedTarget: () =>
       c.harvest({ id: 'a'.repeat(24), pos: { x: 10, y: 10, roomName: 'W1N1' } }),
   }))
-    add(`actions/${name}`, fn);
+    add(\`actions/\${name}\`, fn);
   const properties = {};
   for (const id of [
     'worker',
@@ -331,9 +331,9 @@ export function gameplay() {
     time: Game.time,
   };
   console.log('gameplay', Object.keys(records).length);
-}
+}`;
 
-export function persistence() {
+export const persistence = `function persistence() {
   const helper = require('./helper');
   const binary = require('binary');
   global.turns = (global.turns || 0) + 1;
@@ -355,7 +355,7 @@ export function persistence() {
   };
   Memory.observations = Memory.observations || [];
   Memory.observations.push(before);
-  RawMemory.segments[3] = `segment-${global.turns}`;
+  RawMemory.segments[3] = \`segment-\${global.turns}\`;
   RawMemory.setActiveSegments(['3', 4]);
   RawMemory.setPublicSegments([3]);
   RawMemory.setDefaultPublicSegment(3);
@@ -363,9 +363,9 @@ export function persistence() {
   Game.flags.Flag1.memory.turns = global.turns;
   Game.rooms.W1N1.memory.turns = global.turns;
   console.log(JSON.stringify(before));
-}
+}`;
 
-export function rawMemory() {
+export const rawMemory = `function rawMemory() {
   const attempt = (fn) => {
     try {
       const value = fn();
@@ -396,9 +396,9 @@ export function rawMemory() {
   // Upstream invalidates _parsed but keeps the already-materialized global Memory. A subsequent
   // assignment must not quietly cause the old object to be serialized instead of the raw string.
   console.log(JSON.stringify(records));
-}
+}`;
 
-export function invalidMemory() {
+export const invalidMemory = `function invalidMemory() {
   const attempt = (fn) => {
     try {
       return fn();
@@ -427,9 +427,9 @@ export function invalidMemory() {
       spawn: attempt(() => Game.spawns.Spawn1.memory),
     }),
   );
-}
+}`;
 
-export function memoryJSON() {
+export const memoryJSON = `function memoryJSON() {
   Memory.serializationCalls = 0;
   const inherited = Object.create({ inherited: true });
   inherited.own = 'saved';
@@ -452,12 +452,12 @@ export function memoryJSON() {
   RawMemory.segments[0] = JSON.stringify(Memory.values);
   RawMemory.setActiveSegments([0]);
   console.log(RawMemory.segments[0]);
-}
+}`;
 
 // RoomPosition construction/packing/coercion, geometry, search, look, exit finds, path
 // (de)serialization, Room.Terrain, pre-native PathFinder/findPath early returns and cross-tick
 // reuse of RoomPosition/exit caches. Native PathFinder search is never reached.
-export function positions() {
+export const positions = `function positions() {
   const { describe, attempt } = kit;
   global.positionTicks = (global.positionTicks || 0) + 1;
   const room = Game.rooms.W1N1;
@@ -879,11 +879,11 @@ export function positions() {
   };
   Memory.probe = out;
   console.log('positions', global.positionTicks);
-}
+}`;
 
 // Legacy (PathFinder.use(false)) room pathfinding on the only tick the original keeps the legacy
 // flag on the live register: obstacles, terrain costs, options, caches, end nodes, closest-by-path.
-export function legacyPaths() {
+export const legacyPaths = `function legacyPaths() {
   const { describe, attempt } = kit;
   PathFinder.use(false);
   const room = Game.rooms.W1N1;
@@ -1011,11 +1011,11 @@ export function legacyPaths() {
   ];
   Memory.probe = out;
   console.log('legacy-paths', out.paths.length);
-}
+}`;
 
 // Game.map: exits, statuses, availability, linear/continuous distance, terrain lookups, route
 // search with callback coercion/order/receiver/failures, findExit receivers and map reuse.
-export function mapRouting() {
+export const mapRouting = `function mapRouting() {
   const { describe, attempt } = kit;
   global.mapTicks = (global.mapTicks || 0) + 1;
   const out = { tick: global.mapTicks };
@@ -1212,12 +1212,12 @@ export function mapRouting() {
   };
   Memory.probe = out;
   console.log('map', global.mapTicks);
-}
+}`;
 
 // CostMatrix storage/coercion/aliasing, clone and (de)serialization including malformed inputs,
 // constructor/prototype metadata, foreign receivers, pre-native PathFinder returns and reuse of
 // matrices and constructors held in globals or Memory across ticks.
-export function costMatrix() {
+export const costMatrix = `function costMatrix() {
   const { describe, attempt } = kit;
   global.matrixTicks = (global.matrixTicks || 0) + 1;
   const CostMatrix = PathFinder.CostMatrix;
@@ -1416,12 +1416,12 @@ export function costMatrix() {
   };
   Memory.probe = out;
   console.log('cost-matrix', global.matrixTicks);
-}
+}`;
 
 // Store capacity/usage/free-capacity across general, resource-specific and mixed stores, proxy
 // reads/enumeration/coercion/writes, lazy `_sum` caching and receivers, legacy store aliases and
 // store objects held across ticks.
-export function stores() {
+export const stores = `function stores() {
   const { describe, attempt } = kit;
   global.storeTicks = (global.storeTicks || 0) + 1;
   const out = { tick: global.storeTicks };
@@ -1453,7 +1453,7 @@ export function stores() {
       forIn,
       json: JSON.stringify(store),
       string: attempt(() => String(store)),
-      template: attempt(() => `${store}`),
+      template: attempt(() => \`\${store}\`),
       concat: attempt(() => store + ''),
       number: attempt(() => +store),
       has: ['energy', 'H', 'O', 'getCapacity', 'toString', '_sum'].map((key) => key in store),
@@ -1618,7 +1618,7 @@ export function stores() {
       ];
     }),
   };
-  // Sloppy-mode detached calls bind the global object: the first lazily defined `_sum` is global
+  // Sloppy-mode detached calls bind the global object: the first lazily defined \`_sum\` is global
   // and non-configurable, so later detached calls (even on other ticks) reuse it.
   out.detached = {
     used: attempt(() => {
@@ -1657,13 +1657,13 @@ export function stores() {
   };
   Memory.probe = out;
   console.log('stores', global.storeTicks);
-}
+}`;
 
 // Authentic native PathFinder through the player API (separate native-backed process): search
 // goals/options/limits/coercion, room callbacks (matrices, false, foreign shapes, failures, call
 // order), rooms without terrain, new-pathfinder findPath/findPathTo/findClosestByPath options and
 // grid caches, and moveTo path reuse in creep Memory across ticks.
-export function nativePaths() {
+export const nativePaths = `function nativePaths() {
   const { describe, attempt } = kit;
   global.nativeTicks = (global.nativeTicks || 0) + 1;
   const room = Game.rooms.W1N1;
@@ -1823,4 +1823,4 @@ export function nativePaths() {
   };
   Memory.probe = out;
   console.log('native-paths', global.nativeTicks);
-}
+}`;

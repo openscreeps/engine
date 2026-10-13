@@ -314,6 +314,14 @@ from the original JavaScript source.
 `npm run check` runs the checked-in behavioral tests, strict TypeScript, lint,
 formatting and the declaration build.
 
+Tests and the conformance harness run directly as checked TypeScript using Node 24's
+native type stripping; no per-run transpiler or build is needed. CommonJS oracle
+children use `.cts` to retain the pinned reference modules' `require` semantics.
+Serialized player programs remain JavaScript source text, identical on both sides.
+Worker lifecycle tests advance the supervisor's timers after real process events
+instead of sleeping through restart delays. Child processes, crashes, IPC,
+isolate execution and overlap checks remain real.
+
 The differential suite executes the original public JavaScript sources pinned in
 `reference-versions.json`, not a second implementation of expected game rules:
 
@@ -330,14 +338,14 @@ driver's isolated-vm fork. This requires Python 3 and a C++20 build toolchain
 (MSVC on Windows; make/g++ on Ubuntu), plus network access for packages and Node
 headers. CI runs setup and conformance on Windows and Ubuntu.
 
-`conformance/runtime.mjs` compares player observations, intents and memory using
+`conformance/runtime.ts` compares player observations, intents and memory using
 the original runtime/game code through a constrained host adapter.
-`conformance/simulation.mjs` compares multi-tick results from the original
+`conformance/simulation.ts` compares multi-tick results from the original
 processor against `Simulation`. Each runner reports its exercised coverage,
 reference revisions, differences and normalization. An unexpected mismatch exits
 nonzero; a passing run establishes equivalence only for its scenarios.
 
-`conformance/pathfinder.mjs` compares the pinned driver wrapper and native addon
+`conformance/pathfinder.ts` compares the pinned driver wrapper and native addon
 against the TypeScript pathfinder: exact paths, operation counts, costs,
 completion, errors, callback ordering and argument coercion. The default run
 combines 173 fixed cases with 1,000 seeded cases. A missing or stale native oracle

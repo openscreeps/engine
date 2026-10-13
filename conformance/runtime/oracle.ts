@@ -4,10 +4,60 @@ import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import { build } from 'esbuild';
 import ivm from 'isolated-vm';
-import { referenceRoot } from '../references.mjs';
-import { loadNativePathFinder, nativePathFinderAddonPath } from '../native.mjs';
-import { createOracleLoader } from './loader.mjs';
-import { attachFixtureStorage } from './storage.mjs';
+import { referenceRoot } from '../references.ts';
+import { required } from '../assert.ts';
+import { loadNativePathFinder, nativePathFinderAddonPath } from '../native.ts';
+import { createOracleLoader } from './loader.ts';
+import { attachFixtureStorage, type FixtureCommon } from './storage.ts';
+import type { WorldState } from '../../src/simulation/state.ts';
+import type {
+  CodeModules,
+  ConsoleCommand,
+  RuntimeData,
+} from '../../src/runtime/game/runtime-data.ts';
+import type { SandboxRunMessage } from '../../src/runtime/protocol.ts';
+import type { Constants } from '../../src/constants.ts';
+
+export interface OracleUserState {
+  modules: CodeModules;
+  timestamp: number;
+  memory: string;
+  segments: Record<string, string>;
+  activeSegments: number[];
+  consoleCommands: ConsoleCommand[];
+  publicSegments?: string;
+  defaultPublicSegment?: number | null;
+  activeForeignSegment?: { username: unknown; id: number | undefined; user_id: string | undefined };
+}
+export interface OracleRunResult extends SandboxRunMessage {
+  intents: Record<string, unknown>;
+  persistent: OracleUserState;
+}
+export interface RuntimeOracle {
+  states: Record<string, OracleUserState>;
+  setCode(id: string, modules: CodeModules): void;
+  setMemory(id: string, memory: string): void;
+  setSegment(id: string, segment: number, value: string): void;
+  enqueueConsoleCommand(id: string, expression: string, hidden?: boolean): void;
+  run(world: WorldState, id: string): Promise<OracleRunResult>;
+  dispose(): void;
+}
+interface OracleDriver {
+  constants: Constants;
+  getWorldSize(): number;
+  connect(name: string): Promise<void>;
+  updateAccessibleRoomsList(): Promise<void>;
+  updateRoomStatusData(): Promise<void>;
+  saveUserMemory(id: string, memory: string): Promise<void>;
+  saveUserMemorySegments(id: string, segments: Record<number, string>): Promise<void>;
+}
+type OracleStart = (data: RuntimeData) => ivm.Reference<() => ivm.Copy<SandboxRunMessage>>;
+interface OracleSandbox {
+  isolate: ivm.Isolate;
+  context: ivm.Context;
+  start: ivm.Reference<OracleStart>;
+  timestamp: number;
+}
 
 const engine = resolve(referenceRoot, 'engine');
 const commonRoot = resolve(referenceRoot, 'common');
@@ -37,7 +87,7 @@ const unusedInfrastructure =
 // function wrapper with a module-scoped Buffer. esbuild's own output is not used because it
 // renames identifiers (e.g. `name` -> `name2` next to utils' direct eval, changing upstream
 // error messages) and would hoist a "use strict" from this repo's tsconfig over sloppy modules.
-async function runtimeBundle() {
+async function buildRuntimeBundle() {
   const bufferEntry = localRequire.resolve('buffer/');
   const runtimeEntry = resolve(driverRoot, 'lib/runtime/runtime.js');
   const result = await build({
@@ -83,12 +133,12 @@ async function runtimeBundle() {
     ],
   });
   const ids = new Map(Object.keys(result.metafile.inputs).map((key, index) => [key, index]));
-  const idOf = (path) => {
+  const idOf = (path: string) => {
     const key = Object.keys(result.metafile.inputs).find(
       (input) => !input.includes(':') && resolve(input) === path,
     );
     assert.ok(key !== undefined, `Oracle module graph lacks ${path}`);
-    return ids.get(key);
+    return required(ids.get(key));
   };
   const modules = Object.entries(result.metafile.inputs).map(([key, input]) => {
     let source;
@@ -98,10 +148,11 @@ async function runtimeBundle() {
       source = readFileSync(resolve(key), 'utf8');
       if (key.endsWith('.json')) source = `module.exports = ${source};`;
     }
-    const requests = {};
+    const requests: Record<string, number | undefined> = {};
     for (const entry of input.imports) {
       if (entry.external) continue;
       assert.equal(entry.kind, 'require-call', `Unexpected ${entry.kind} in ${key}`);
+      assert.ok(entry.original, `Oracle import lacks request in ${key}`);
       requests[entry.original] = ids.get(entry.path);
     }
     return `[function (exports, require, module, __filename, __dirname, Buffer) {\n${source}\n}, ${JSON.stringify(requests)}]`;
@@ -120,14 +171,18 @@ function load(id) {
   }, module, '/index.js', '/', Buffer);
   return module.exports;
 }
-Buffer = load(${idOf(bufferEntry)}).Buffer;
-load(${idOf(runtimeEntry)});
+Buffer = load(${String(idOf(bufferEntry))}).Buffer;
+load(${String(idOf(runtimeEntry))});
 })();`;
 }
 
+// Cache only immutable original-source text; each scenario still gets a fresh module realm and
+// real player isolates. Re-resolving the identical graph is not part of the conformance boundary.
+let bundlePromise: Promise<string> | undefined;
+
 // Native terrain is process-global inside the addon and never forgotten, so one process may load
 // exactly one terrain set; a different set fails closed instead of searching stale rooms.
-let nativeTerrainLoaded;
+let nativeTerrainLoaded: string | undefined;
 
 // Real pinned runtime.js/game modules in a V8 isolate. The adapter replaces only storage RPC and
 // webpack's bundling/bootstrap. The native path finder is either the authentic pinned driver addon
@@ -135,19 +190,28 @@ let nativeTerrainLoaded;
 // `ivm.NativeModule` instance exactly like driver user-vm.js) or a stub whose search fails
 // explicitly. CPU billing, native heap/CPU termination and full driver/server scheduling are NOT
 // conformance claims. No gameplay return codes or intent rules are implemented in this adapter.
-export async function createRuntimeOracle({ now, nativeTerrain, freezeCpuTime = false }) {
+export async function createRuntimeOracle({
+  now,
+  nativeTerrain,
+  freezeCpuTime = false,
+}: {
+  now: number;
+  nativeTerrain?: Record<string, string>;
+  freezeCpuTime?: boolean;
+}): Promise<RuntimeOracle> {
   for (const [name, version] of [
     ['lodash', '3.10.1'],
     ['@screeps/pathfinding', '0.4.17'],
     ['heap', '0.2.5'],
-  ]) {
+  ] as const) {
+    const dependency = upstreamRequire(`${name}/package.json`) as { version: string };
     assert.equal(
-      upstreamRequire(`${name}/package.json`).version,
+      dependency.version,
       version,
       `Oracle dependency ${name} must match the pinned lockfile; run conformance:setup`,
     );
   }
-  const replacements = new Map([
+  const replacements = new Map<string, unknown>([
     ['generic-pool', unavailable],
     ['he', unavailable],
     [resolve(driverRoot, 'lib/runtime/user-vm.js'), unavailable],
@@ -156,15 +220,24 @@ export async function createRuntimeOracle({ now, nativeTerrain, freezeCpuTime = 
     ['../native/build/Release/native', {}],
   ]);
   const loader = createOracleLoader({ packages, replacements, now });
-  const common = loader.load(resolve(commonRoot, 'index.js'));
+  const common = loader.load(resolve(commonRoot, 'index.js')) as FixtureCommon;
   const storage = attachFixtureStorage(common);
-  const driver = loader.load(resolve(driverRoot, 'lib/index.js'));
+  const driver = loader.load(resolve(driverRoot, 'lib/index.js')) as OracleDriver;
   replacements.set('~runtime-driver', driver);
   replacements.set('@screeps/core', driver);
-  const utils = loader.load(resolve(engine, 'src/utils.js'));
-  const dataModule = loader.load(resolve(driverRoot, 'lib/runtime/data.js'));
-  const bundle = await runtimeBundle();
-  let nativeModule;
+  const utils = loader.load(resolve(engine, 'src/utils.js')) as {
+    storeIntents: (
+      id: string,
+      intents: SandboxRunMessage['intentsList'],
+      data: RuntimeData,
+      custom: object,
+    ) => Record<string, unknown>;
+  };
+  const dataModule = loader.load(resolve(driverRoot, 'lib/runtime/data.js')) as {
+    get: (id: string) => Promise<RuntimeData>;
+  };
+  const bundle = await (bundlePromise ??= buildRuntimeBundle());
+  let nativeModule: ivm.NativeModule | undefined;
   if (nativeTerrain) {
     const rooms = Object.entries(nativeTerrain).map(([room, terrain]) => ({ room, terrain }));
     const signature = JSON.stringify(rooms);
@@ -173,17 +246,20 @@ export async function createRuntimeOracle({ now, nativeTerrain, freezeCpuTime = 
       'Native path finder terrain is process-global: run each native terrain set in its own process',
     );
     if (nativeTerrainLoaded === undefined) {
-      loader.load(resolve(driverRoot, 'lib/path-finder.js')).init(loadNativePathFinder(), rooms);
+      const finder = loader.load(resolve(driverRoot, 'lib/path-finder.js')) as {
+        init: (native: unknown, rooms: Array<{ room: string; terrain: string }>) => void;
+      };
+      finder.init(loadNativePathFinder(), rooms);
       nativeTerrainLoaded = signature;
     }
     nativeModule = new ivm.NativeModule(nativePathFinderAddonPath);
   }
-  const states = {};
-  const sandboxes = new Map();
+  const states: Record<string, OracleUserState> = {};
+  const sandboxes = new Map<string, OracleSandbox>();
   let connected = false;
   let timestamp = now;
 
-  function user(id) {
+  function user(id: string): OracleUserState {
     return (states[id] ??= {
       modules: {},
       timestamp: 0,
@@ -193,7 +269,7 @@ export async function createRuntimeOracle({ now, nativeTerrain, freezeCpuTime = 
       consoleCommands: [],
     });
   }
-  async function sandbox(id, world, data) {
+  async function sandbox(id: string, world: WorldState, data: RuntimeData): Promise<OracleSandbox> {
     const existing = sandboxes.get(id);
     if (existing && existing.timestamp === data.userCodeTimestamp) return existing;
     if (existing) existing.isolate.dispose();
@@ -242,14 +318,18 @@ export async function createRuntimeOracle({ now, nativeTerrain, freezeCpuTime = 
         }),
       );
       await context.eval('_init();');
-      const start = await context.global.get('_start', { reference: true });
+      // Original _start returns a reference whose callback transfers an ExternalCopy tick result.
+      const start = (await context.global.get('_start', {
+        reference: true,
+      })) as ivm.Reference<OracleStart>;
       const setTerrain = await context.global.get('_setStaticTerrainData', { reference: true });
       const rooms = Object.keys(world.terrain);
       const terrain = new Uint8Array(rooms.length * 2500);
-      const offsets = {};
+      const offsets: Record<string, number> = {};
       rooms.forEach((room, index) => {
         offsets[room] = index * 2500;
-        for (let i = 0; i < 2500; i++) terrain[index * 2500 + i] = Number(world.terrain[room][i]);
+        for (let i = 0; i < 2500; i++)
+          terrain[index * 2500 + i] = Number(required(world.terrain[room])[i]);
       });
       await setTerrain.apply(undefined, [
         new ivm.ExternalCopy(terrain.buffer).copyInto(),
@@ -269,19 +349,19 @@ export async function createRuntimeOracle({ now, nativeTerrain, freezeCpuTime = 
   }
   return {
     states,
-    setCode(id, modules) {
+    setCode(id: string, modules: CodeModules) {
       Object.assign(user(id), { modules: structuredClone(modules), timestamp: ++timestamp });
     },
-    setMemory(id, memory) {
+    setMemory(id: string, memory: string) {
       user(id).memory = memory;
     },
-    setSegment(id, segment, value) {
+    setSegment(id: string, segment: number, value: string) {
       user(id).segments[segment] = value;
     },
-    enqueueConsoleCommand(id, expression, hidden = false) {
+    enqueueConsoleCommand(id: string, expression: string, hidden = false) {
       user(id).consoleCommands.push({ expression, hidden });
     },
-    async run(world, id) {
+    async run(world: WorldState, id: string) {
       storage.sync(world, states);
       if (!connected) {
         await driver.connect('conformance');
@@ -296,32 +376,40 @@ export async function createRuntimeOracle({ now, nativeTerrain, freezeCpuTime = 
       await instance.context.eval(
         `Game.shard = {name: ${JSON.stringify(world.shardName)}, type: 'normal', ptr: false};`,
       );
-      let result;
+      let result: SandboxRunMessage;
       try {
-        result = await run.apply(undefined, [], { timeout: 5000 });
+        // isolated-vm unwraps the upstream ExternalCopy.copyInto() transfer; its declaration
+        // retains Copy<T>, so describe that exact transport boundary rather than the wrapper.
+        const transferred: unknown = await run.apply(undefined, [], { timeout: 5000 });
+        assert.ok(
+          transferred &&
+            typeof transferred === 'object' &&
+            'type' in transferred &&
+            (transferred.type === 'done' || transferred.type === 'error'),
+          'Original runtime returned a tick result',
+        );
+        result = transferred as SandboxRunMessage;
       } finally {
         run.release();
       }
-      assert.ok(
-        result && (result.type === 'done' || result.type === 'error'),
-        'Original runtime returned a tick result',
-      );
-      result.intents = utils.storeIntents(id, result.intentsList, data, {});
+      const intents = utils.storeIntents(id, result.intentsList, data, {});
       const state = user(id);
       state.consoleCommands = [];
       if (result.memory) {
         await driver.saveUserMemory(id, result.memory);
-        state.memory = storage.values.get(common.storage.env.keys.MEMORY + id);
+        state.memory = required(storage.values.get(common.storage.env.keys.MEMORY + id));
       }
       if (result.memorySegments) {
         await driver.saveUserMemorySegments(id, result.memorySegments);
         state.segments = structuredClone(
-          storage.hashes.get(common.storage.env.keys.MEMORY_SEGMENTS + id),
+          required(storage.hashes.get(common.storage.env.keys.MEMORY_SEGMENTS + id)),
         );
       }
-      for (const key of ['activeSegments', 'publicSegments', 'defaultPublicSegment']) {
-        if (result[key] !== undefined) state[key] = structuredClone(result[key]);
-      }
+      if (result.activeSegments !== undefined)
+        state.activeSegments = structuredClone(result.activeSegments);
+      if (result.publicSegments !== undefined) state.publicSegments = result.publicSegments;
+      if (result.defaultPublicSegment !== undefined)
+        state.defaultPublicSegment = result.defaultPublicSegment;
       if (result.activeForeignSegment !== undefined) {
         if (result.activeForeignSegment === null) delete state.activeForeignSegment;
         else {
@@ -331,10 +419,12 @@ export async function createRuntimeOracle({ now, nativeTerrain, freezeCpuTime = 
           );
           state.activeForeignSegment = { ...requested, user_id: target?._id };
           if (!requested.id && target && states[target._id]?.defaultPublicSegment)
-            state.activeForeignSegment.id = states[target._id].defaultPublicSegment;
+            state.activeForeignSegment.id = required(
+              required(states[target._id]).defaultPublicSegment,
+            );
         }
       }
-      return { ...result, memory: state.memory, persistent: structuredClone(state) };
+      return { ...result, intents, memory: state.memory, persistent: structuredClone(state) };
     },
     dispose() {
       for (const instance of sandboxes.values()) instance.isolate.dispose();

@@ -1,4 +1,6 @@
+import assert from 'node:assert/strict';
 import { createWorldState } from '../../src/simulation/state.ts';
+import type { RoomObject, WorldState } from '../../src/simulation/state.ts';
 
 export const NOW = 1700000000000;
 export function fixture() {
@@ -27,7 +29,7 @@ export function fixture() {
       ],
     },
   });
-  function object(id, type, x, y, extra = {}) {
+  function object(id: string, type: string, x: number, y: number, extra: Partial<RoomObject> = {}) {
     world.roomObjects[id] = { _id: id, type, room: 'W1N1', x, y, ...extra };
   }
   object('controller', 'controller', 13, 12, {
@@ -170,7 +172,9 @@ export function fixture() {
     downgradeTime: 50000,
     safeMode: null,
   });
-  world.roomObjects.u2controller.room = 'W2N1';
+  const otherController = world.roomObjects.u2controller;
+  assert.ok(otherController);
+  otherController.room = 'W2N1';
   world.userPowerCreeps.pc = {
     _id: 'pc',
     user: 'u1',
@@ -220,23 +224,33 @@ export function fixture() {
   return world;
 }
 
-function terrain(paint) {
-  const cells = Array(2500).fill('0');
-  const rect = (x1, y1, x2, y2, value) => {
+type RectanglePainter = (x1: number, y1: number, x2: number, y2: number, value: string) => void;
+function terrain(paint?: (rect: RectanglePainter) => void) {
+  const cells: string[] = Array<string>(2500).fill('0');
+  const rect: RectanglePainter = (x1, y1, x2, y2, value) => {
     for (let y = y1; y <= y2; y++) for (let x = x1; x <= x2; x++) cells[y * 50 + x] = value;
   };
   paint?.(rect);
   return cells.join('');
 }
-const edges = { t: [0, 0, 49, 0], r: [49, 0, 49, 49], b: [0, 49, 49, 49], l: [0, 0, 0, 49] };
-function walled(...sides) {
-  return (rect) => sides.forEach((side) => rect(...edges[side], '1'));
+const edges: Record<'t' | 'r' | 'b' | 'l', [number, number, number, number]> = {
+  t: [0, 0, 49, 0],
+  r: [49, 0, 49, 49],
+  b: [0, 49, 49, 49],
+  l: [0, 0, 0, 49],
+};
+function walled(...sides: Array<keyof typeof edges>) {
+  return (rect: RectanglePainter) => {
+    sides.forEach((side) => {
+      rect(...edges[side], '1');
+    });
+  };
 }
 
 // Shared world for the targeted core API scenarios: a 3x3 accessible room block with one-sided
 // exits, an isolated room, every room-status class, mixed wall/swamp/wall+swamp terrain codes,
 // legacy-path obstacles and resource-specific stores. Same documents feed both engines.
-export function spatialWorld(world) {
+export function spatialWorld(world: WorldState) {
   world.terrain.W1N1 = terrain((rect) => {
     walled('r', 'b')(rect);
     rect(0, 0, 49, 0, '1');
@@ -269,13 +283,19 @@ export function spatialWorld(world) {
   };
   Object.assign(world.terrain, rooms);
   for (const name of Object.keys(rooms)) world.rooms[name] = { _id: name, status: 'normal' };
-  Object.assign(world.rooms.W3N1, { novice: NOW + 5000 });
-  Object.assign(world.rooms.W3N2, { respawnArea: NOW + 7000 });
-  Object.assign(world.rooms.W3N0, { openTime: NOW + 9000 });
-  Object.assign(world.rooms.W1N3, { status: 'out of borders' });
-  Object.assign(world.rooms.W2N3, { openTime: NOW - 1000 });
-  Object.assign(world.rooms.W0N3, { novice: NOW - 10 });
-  function object(id, type, x, y, extra = {}) {
+  for (const [name, update] of [
+    ['W3N1', { novice: NOW + 5000 }],
+    ['W3N2', { respawnArea: NOW + 7000 }],
+    ['W3N0', { openTime: NOW + 9000 }],
+    ['W1N3', { status: 'out of borders' }],
+    ['W2N3', { openTime: NOW - 1000 }],
+    ['W0N3', { novice: NOW - 10 }],
+  ] as const) {
+    const room = world.rooms[name];
+    assert.ok(room);
+    Object.assign(room, update);
+  }
+  function object(id: string, type: string, x: number, y: number, extra: Partial<RoomObject> = {}) {
     world.roomObjects[id] = { _id: id, type, room: 'W1N1', x, y, ...extra };
   }
   object('road2', 'road', 16, 8, { hits: 5000, hitsMax: 5000, nextDecayTime: 900 });
