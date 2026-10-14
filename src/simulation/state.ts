@@ -128,6 +128,14 @@ export interface StrongholdPopulationEntry {
 }
 
 /**
+ * Defender population of a stronghold core. Upstream writes it as an array, but the driver bulk
+ * merges that array into the `{}` it substitutes for the absent value, so it is persisted (and seen
+ * in memory) as an index-keyed object (`{"0": {...}}`); upstream iterates it with `for…in`.
+ */
+export type StrongholdPopulation =
+  StrongholdPopulationEntry[] | Record<string, StrongholdPopulationEntry>;
+
+/**
  * A `rooms.objects` document. Every room object type shares a single shape whose type specific
  * fields are optional, exactly like the schemaless upstream documents. Dropped resources keep
  * their amount under the resource type key (e.g. `{type: 'energy', resourceType: 'H', H: 20}`).
@@ -221,7 +229,7 @@ export interface RoomObject extends Partial<Record<ResourceType, number>> {
   strongholdBehavior?: string;
   depositTypes?: string[];
   nextExpandTime?: number;
-  population?: StrongholdPopulationEntry[] | null;
+  population?: StrongholdPopulation | null;
   hitsTarget?: number;
 
   // nukes

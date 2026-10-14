@@ -430,14 +430,15 @@ function maintainPopulation(context: StrongholdContext): void {
     return;
   }
 
-  core.population.forEach((entry, i) => {
+  // upstream `for (let i in core.population)`: the population is usually an index-keyed object
+  for (const [i, entry] of Object.entries(core.population)) {
     maintainCreep(
-      `defender${String(i)}`,
+      `defender${i}`,
       lookup(creepBodies, entry.body),
       context,
       lookup(creepBehaviors, entry.behavior),
     );
-  });
+  }
 }
 
 function antinuke(context: StrongholdContext): void {
